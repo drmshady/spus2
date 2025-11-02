@@ -2,7 +2,7 @@
     "DATA_PROVIDERS": {
         "ALPHA_VANTAGE_API_KEY": "MTW5GY152ZMBNJWB"
     },
-    "SPUS_HOLDINGS_CSV_PATH": "TidalFG_HoldINGS_SPUS.csv",
+    "SPUS_HOLDINGS_CSV_PATH": "TidalFG_Holdings_SPUS.csv",
     "EXCLUDE_TICKERS": [
         "BRK.B",
         "BF.B",
