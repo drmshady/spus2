@@ -275,19 +275,8 @@ def generate_quant_report(CONFIG, progress_callback=None):
     results_df.set_index('ticker', inplace=True)
     
     # --- 3. Risk Management Calcs ---
-    report_progress(0.75, "(4/7) Calculating risk management metrics...")
-    rm_config = CONFIG.get('RISK_MANAGEMENT', {})
-    atr_sl_mult = rm_config.get('ATR_STOP_LOSS_MULTIPLIER', 1.5)
-    atr_tp_mult = rm_config.get('ATR_TAKE_PROFIT_MULTIPLIER', 3.0)
-    
-    results_df['Stop Loss Price'] = results_df['last_price'] - (results_df['ATR'] * atr_sl_mult)
-    results_df['Take Profit Price'] = results_df['last_price'] + (results_df['ATR'] * atr_tp_mult)
-    
-    risk_per_share = (results_df['last_price'] - results_df['Stop Loss Price']).replace(0, np.nan)
-    reward_per_share = (results_df['Take Profit Price'] - results_df['last_price']).replace(0, np.nan)
-    
-    results_df['Risk/Reward Ratio'] = (reward_per_share / risk_per_share).replace([np.inf, -np.inf], np.nan)
-    results_df['Risk % (to Stop)'] = (risk_per_share / results_df['last_price']).replace([np.inf, -np.inf], np.nan) * 100
+    # *** THIS SECTION IS NOW REMOVED, AS IT'S DONE IN SPUS.PY ***
+    report_progress(0.75, "(4/7) Risk metrics calculated in spus.py.")
     
     # --- 4. Factor Z-Score Calculation ---
     report_progress(0.8, "(5/7) Calculating robust Z-Scores...")
@@ -307,7 +296,7 @@ def generate_quant_report(CONFIG, progress_callback=None):
         'momentum_12m': 'Momentum (12M %)', 'volatility_1y': 'Volatility (1Y)',
         'returnOnEquity': 'ROE (%)', 'debtToEquity': 'Debt/Equity', 'profitMargins': 'Profit Margin (%)',
         'beta': 'Beta', 'RSI': 'RSI (14)', 'ADX': 'ADX (14)',
-        'Stop Loss Price': 'Stop Loss (ATR)', 'Take Profit Price': 'Take Profit (ATR)'
+        'Stop Loss Price': 'Stop Loss', 'Take Profit Price': 'Take Profit'
     })
     
     # Format percentages for display
@@ -778,7 +767,8 @@ def main():
                 'Final Quant Score', 
                 'Z_Value', 'Z_Momentum', 'Z_Quality', 
                 'Z_Size', 'Z_LowVolatility', 'Z_Technical',
-                'Risk/Reward Ratio'
+                'Risk/Reward Ratio',
+                'Position Size (USD)' # Added new col
             ]
             # Ensure columns exist
             display_cols = [c for c in display_cols if c in filtered_df.columns]
@@ -801,6 +791,7 @@ def main():
                     "Z_LowVolatility": st.column_config.NumberColumn(format="%.2f"),
                     "Z_Technical": st.column_config.NumberColumn(format="%.2f"),
                     "Risk/Reward Ratio": st.column_config.NumberColumn(format="%.2f"),
+                    "Position Size (USD)": st.column_config.NumberColumn(format="$%,.0f"),
                 },
                 use_container_width=True,
                 height=700
@@ -821,6 +812,12 @@ def main():
             hist_data = all_histories.get(selected_ticker)
             
             st.subheader(f"Analysis for: {selected_ticker}")
+            
+            # *** ADD THIS WARNING DISPLAY ***
+            if pd.notna(ticker_data.get('data_warning')):
+                st.warning(f"⚠️ **Data Warning:** {ticker_data['data_warning']}")
+            # *** END OF NEW DISPLAY ***
+            
             st.markdown(f"**Sector:** {ticker_data['Sector']} | **Data Source:** `{ticker_data['source']}`")
             
             # --- Key Metrics ---
@@ -860,31 +857,45 @@ def main():
 
             st.divider()
             
-            # --- Risk & Value Metrics ---
-            st.subheader("Risk & Value Metrics")
-            risk_val_cols = st.columns(4)
-            
-            # *** NAN-HANDLING FIX APPLIED BELOW ***
+            # --- Risk, Value & Position Sizing Metrics ---
+            st.subheader("Risk & Position Sizing")
+            risk_val_cols = st.columns(5) # Changed to 5 columns
             
             # 1. Stop Loss
             sl_price = ticker_data['Stop Loss Price']
             risk_pct = ticker_data['Risk % (to Stop)']
             sl_display = f"${sl_price:.2f}" if pd.notna(sl_price) else "N/A"
             risk_display = f"Risk %: {risk_pct:.1f}%" if pd.notna(risk_pct) else "N/A"
-            risk_val_cols[0].metric("ATR-Based Stop Loss", sl_display, help=risk_display)
+            sl_method = ticker_data.get('SL_Method', 'N/A')
+            risk_val_cols[0].metric(f"Stop Loss ({sl_method})", sl_display, help=risk_display)
 
-            # 2. Take Profit
+            # 2. Take Profit (Fibonacci)
             tp_price = ticker_data['Take Profit Price']
             tp_display = f"${tp_price:.2f}" if pd.notna(tp_price) else "N/A"
-            risk_val_cols[1].metric("ATR-Based Take Profit", tp_display)
+            risk_val_cols[1].metric("Take Profit (Fib 1.618)", tp_display)
 
             # 3. Risk/Reward
             rr_ratio = ticker_data['Risk/Reward Ratio']
             rr_display = f"{rr_ratio:.2f}" if pd.notna(rr_ratio) else "N/A"
             risk_val_cols[2].metric("Risk/Reward Ratio", rr_display)
+
+            # 4. Position Size (Shares)
+            pos_shares = ticker_data['Position Size (Shares)']
+            pos_display = f"{pos_shares:.0f} Shares" if pd.notna(pos_shares) else "N/A"
+            risk_usd = ticker_data.get('Risk Per Trade (USD)', 500)
+            risk_val_cols[3].metric("Position Size (Shares)", pos_display, help=f"Based on ${risk_usd:,.0f} risk")
             
-            # 4. Graham
-            risk_val_cols[3].metric("Valuation (Graham)", ticker_data['grahamValuation'])
+            # 5. Position Size (USD)
+            pos_usd = ticker_data['Position Size (USD)']
+            pos_usd_display = f"${pos_usd:,.0f}" if pd.notna(pos_usd) else "N/A"
+            risk_val_cols[4].metric("Position Size (USD)", pos_usd_display, help="Shares * Last Price")
+
+            st.divider() # Add a divider before the next section
+            
+            # --- Graham Value Metric (moved to a new subheader) ---
+            st.subheader("Valuation")
+            val_col1, _, _ = st.columns(3) # Use columns to keep it compact
+            val_col1.metric("Valuation (Graham)", ticker_data['grahamValuation'])
             
             # --- Raw Data Expander ---
             with st.expander("View All Raw Data for " + selected_ticker):
@@ -959,7 +970,6 @@ def run_analysis_for_scheduler():
         ]
     )
     
-    # This 'try' block...
     try:
         df, _, _ = generate_quant_report(CONFIG, print_progress_callback)
         if df is not None:
@@ -967,14 +977,12 @@ def run_analysis_for_scheduler():
         else:
             print("Analysis failed to produce data.")
             
-    # ...must align perfectly with this 'except' block.
     except Exception as e:
         logging.error(f"[SPUS SCHEDULER] Fatal error during scheduled run: {e}", exc_info=True)
         print(f"Error: Analysis failed. Check log file for details: {log_file_path}")
 
 # --- ⭐️ 7. Main App Entry Point ---
 
-# This 'if' statement must have NO indentation.
 if __name__ == "__main__":
     if "--run-scheduler" in sys.argv:
         run_analysis_for_scheduler()
