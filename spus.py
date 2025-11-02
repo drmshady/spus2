@@ -20,6 +20,7 @@ from datetime import datetime
 import json
 import numpy as np
 from bs4 import BeautifulSoup
+import random  # <-- Added for API key rotation
 
 # --- Define Base Directory ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -171,11 +172,11 @@ def fetch_data_yfinance(ticker_obj):
 
 def fetch_data_alpha_vantage(ticker, api_key):
     """Fallback data provider: Alpha Vantage."""
-    if not api_key or api_key == "YOUR_API_KEY_HERE":
-        logging.warning(f"[{ticker}] Alpha Vantage API key not set. Skipping fallback.")
+    if not api_key or api_key == "YOUR_API_KEY_1": # Check against a default placeholder
+        logging.warning(f"[{ticker}] Alpha Vantage API key ('{api_key}') is not set. Skipping fallback.")
         return None
 
-    logging.info(f"[{ticker}] Using Alpha Vantage fallback.")
+    logging.info(f"[{ticker}] Using Alpha Vantage fallback with a rotated key.")
     base_url = "https://www.alphavantage.co/query"
     hist_data = None
     info_data = None
@@ -302,6 +303,7 @@ def parse_ticker_data(data, ticker_symbol):
         if parsed['priceToBook'] and last_price:
             bvps = last_price / parsed['priceToBook']
         
+        # *** CORRECTED FOR RUNTIMEWARNING ***
         if parsed['trailingEps'] and bvps and parsed['trailingEps'] > 0 and bvps > 0:
             parsed['grahamNumber'] = (22.5 * parsed['trailingEps'] * bvps) ** 0.5
             parsed['grahamValuation'] = "Undervalued (Graham)" if last_price < parsed['grahamNumber'] else "Overvalued (Graham)"
@@ -505,8 +507,17 @@ def process_ticker(ticker):
     else:
         # 2. Attempt Alpha Vantage Fallback
         logging.warning(f"[{ticker}] yfinance data invalid. Trying Alpha Vantage fallback.")
-        av_key = CONFIG.get('DATA_PROVIDERS', {}).get('ALPHA_VANTAGE_API_KEY', None)
-        av_data = fetch_data_alpha_vantage(ticker, av_key)
+        
+        # *** CORRECTED FOR API KEY ROTATION ***
+        av_keys_list = CONFIG.get('DATA_PROVIDERS', {}).get('ALPHA_VANTAGE_API_KEYS', [])
+        
+        if not av_keys_list:
+            logging.error(f"[{ticker}] Alpha Vantage fallback failed: No API keys found in config.json under ALPHA_VANTAGE_API_KEYS.")
+            av_data = None
+        else:
+            # Select a random key from the list
+            selected_av_key = random.choice(av_keys_list)
+            av_data = fetch_data_alpha_vantage(ticker, selected_av_key)
         
         if is_data_valid(av_data, source="alpha_vantage"):
             data_to_parse = av_data
@@ -541,6 +552,7 @@ def calculate_support_resistance(hist_df):
         
         high_low_diff = resistance_val - support_val
         fib_161_8_level = resistance_val + (high_low_diff * 0.618) if high_low_diff > 0 else None
+        # *** SYNTAX ERROR FIX: Added 'else None' ***
         fib_61_8_level = resistance_val - (high_low_diff * 0.618) if high_low_diff > 0 else None
         return support_val, support_date, resistance_val, resistance_date, fib_161_8_level, fib_161_8_level
     except Exception as e:
