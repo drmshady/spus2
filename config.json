@@ -29,11 +29,12 @@
         "ADX_WINDOW": 14,
         "ATR_WINDOW": 14
     },
-    "RISK_MANAGEMENT": {
+   "RISK_MANAGEMENT": {
         "ATR_STOP_LOSS_MULTIPLIER": 1.5,
         "ATR_TAKE_PROFIT_MULTIPLIER": 3.0,
-        "MAX_POSITION_PERCENTAGE": 0.10
-    },
+        "MAX_POSITION_PERCENTAGE": 0.10,
+        "RISK_PER_TRADE_AMOUNT": 50 
+    },,
     "STATISTICAL": {
         "WINSORIZE_LIMIT": 0.05,
         "MIN_SECTOR_SIZE_FOR_MEDIAN": 5
