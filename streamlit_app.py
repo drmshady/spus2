@@ -959,21 +959,24 @@ def run_analysis_for_scheduler():
         ]
     )
     
+    # This 'try' block...
     try:
         df, _, _ = generate_quant_report(CONFIG, print_progress_callback)
         if df is not None:
             print(f"Successfully generated report for {len(df)} tickers.")
         else:
             print("Analysis failed to produce data.")
-     except Exception as e:
+            
+    # ...must align perfectly with this 'except' block.
+    except Exception as e:
         logging.error(f"[SPUS SCHEDULER] Fatal error during scheduled run: {e}", exc_info=True)
         print(f"Error: Analysis failed. Check log file for details: {log_file_path}")
 
 # --- ⭐️ 7. Main App Entry Point ---
 
+# This 'if' statement must have NO indentation.
 if __name__ == "__main__":
     if "--run-scheduler" in sys.argv:
         run_analysis_for_scheduler()
     else:
-        main()       
-            
+        main()
