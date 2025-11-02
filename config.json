@@ -1,0 +1,93 @@
+{
+    "DATA_PROVIDERS": {
+        "ALPHA_VANTAGE_API_KEY": "YOUR_API_KEY_HERE"
+    },
+    "SPUS_HOLDINGS_CSV_PATH": "TidalFG_HoldINGS_SPUS.csv",
+    "EXCLUDE_TICKERS": [
+        "BRK.B",
+        "BF.B",
+        "CASH&OTHER",
+        "003654100CVR"
+    ],
+    "TICKER_LIMIT": 0,
+    "MAX_CONCURRENT_WORKERS": 10,
+    "HISTORICAL_DATA_PERIOD": "5y",
+    "SR_LOOKBACK_PERIOD": 90,
+    "NEWS_LOOKBACK_HOURS": 48,
+    "TECHNICALS": {
+        "RSI_WINDOW": 14,
+        "SHORT_MA_WINDOW": 50,
+        "LONG_MA_WINDOW": 200,
+        "MACD_SHORT_SPAN": 12,
+        "MACD_LONG_SPAN": 26,
+        "MACD_SIGNAL_SPAN": 9,
+        "ADX_WINDOW": 14,
+        "ATR_WINDOW": 14
+    },
+    "RISK_MANAGEMENT": {
+        "ATR_STOP_LOSS_MULTIPLIER": 1.5,
+        "ATR_TAKE_PROFIT_MULTIPLIER": 3.0,
+        "MAX_POSITION_PERCENTAGE": 0.10
+    },
+    "STATISTICAL": {
+        "WINSORIZE_LIMIT": 0.05,
+        "MIN_SECTOR_SIZE_FOR_MEDIAN": 5
+    },
+    "LOGGING": {
+        "EXCEL_FILE_PATH": "./spus_analysis_results.xlsx",
+        "LOG_FILE_PATH": "./spus_analysis.log",
+        "RESULTS_DIR": "./results_history"
+    },
+    "DEFAULT_FACTOR_WEIGHTS": {
+        "Value": 0.20,
+        "Momentum": 0.20,
+        "Quality": 0.20,
+        "Size": 0.10,
+        "LowVolatility": 0.15,
+        "Technical": 0.15
+    },
+    "FACTOR_DEFINITIONS": {
+        "Value": {
+            "components": [
+                { "name": "P/FCF", "high_is_good": false },
+                { "name": "enterpriseToEbitda", "high_is_good": false },
+                { "name": "forwardPE", "high_is_good": false },
+                { "name": "priceToBook", "high_is_good": false },
+                { "name": "grahamNumber", "high_is_good": true } 
+            ]
+        },
+        "Momentum": {
+            "components": [
+                { "name": "risk_adjusted_momentum", "high_is_good": true },
+                { "name": "momentum_3m", "high_is_good": true }
+            ]
+        },
+        "Quality": {
+            "components": [
+                { "name": "returnOnEquity", "high_is_good": true },
+                { "name": "profitMargins", "high_is_good": true },
+                { "name": "returnOnAssets", "high_is_good": true },
+                { "name": "debtToEquity", "high_is_good": false }
+            ]
+        },
+        "Size": {
+            "components": [
+                { "name": "floatAdjustedMarketCap", "high_is_good": false }
+            ]
+        },
+        "LowVolatility": {
+            "components": [
+                { "name": "volatility_1y", "high_is_good": false },
+                { "name": "beta", "high_is_good": false }
+            ]
+        },
+        "Technical": {
+            "components": [
+                { "name": "RSI", "high_is_good": true },
+                { "name": "ADX", "high_is_good": true },
+                { "name": "Price_vs_SMA50", "high_is_good": true },
+                { "name": "Price_vs_SMA200", "high_is_good": true }
+            ]
+        }
+    }
+}
