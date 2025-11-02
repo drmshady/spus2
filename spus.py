@@ -279,7 +279,7 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['forwardPE'] = info.get('forwardPE')
             parsed['priceToBook'] = info.get('priceToBook')
             parsed['marketCap'] = info.get('marketCap')
-            parsed['sector'] = info.get('sector', 'Unknown')
+            parsed['Sector'] = info.get('sector', 'Unknown')
             parsed['enterpriseToEbitda'] = info.get('enterpriseToEbitda')
             parsed['freeCashflow'] = info.get('freeCashflow')
             parsed['trailingEps'] = info.get('trailingEps')
@@ -287,7 +287,7 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['forwardPE'] = float(info.get('ForwardPE', 'nan'))
             parsed['priceToBook'] = float(info.get('PriceToBookRatio', 'nan'))
             parsed['marketCap'] = float(info.get('MarketCapitalization', 'nan'))
-            parsed['sector'] = info.get('Sector', 'Unknown')
+            parsed['Sector'] = info.get('Sector', 'Unknown')
             parsed['enterpriseToEbitda'] = float(info.get('EVToEBITDA', 'nan'))
             parsed['freeCashflow'] = None # Not in AV Overview
             parsed['trailingEps'] = float(info.get('EPS', 'nan'))
