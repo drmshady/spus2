@@ -321,7 +321,8 @@ def generate_quant_report(CONFIG, progress_callback=None):
     }
 
     # Save Excel
-    excel_file_path = os.path.join(BASE_DIR, CONFIG['EXCEL_FILE_PATH'])
+    # *** CORRECTED LINE ***
+    excel_file_path = os.path.join(BASE_DIR, CONFIG['LOGGING']['EXCEL_FILE_PATH'])
     try:
         with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
             for sheet_name, df_sheet in data_sheets.items():
@@ -590,7 +591,8 @@ def main():
 
         # --- Download Buttons ---
         st.subheader("Downloads")
-        excel_path, pdf_path = get_latest_reports(os.path.join(BASE_DIR, CONFIG['EXCEL_FILE_PATH']))
+        # *** CORRECTED LINE ***
+        excel_path, pdf_path = get_latest_reports(os.path.join(BASE_DIR, CONFIG['LOGGING']['EXCEL_FILE_PATH']))
         
         if excel_path:
             with open(excel_path, "rb") as file:
@@ -715,23 +717,6 @@ def main():
             ]
             # Ensure columns exist
             display_cols = [c for c in display_cols if c in filtered_df.columns]
-            
-            st.dataframe(
-                filtered_df.head(20)[display_cols],
-                column_config={
-                    "Last Price": st.column_config.NumberColumn(format="$%.2f"),
-                    "Market Cap": st.column_config.NumberColumn(format="$%.1fB", help="Market Cap in Billions"),
-                    "Final Quant Score": st.column_config.NumberColumn(format="%.3f"),
-                    "Z_Value": st.column_config.NumberColumn(format="%.2f"),
-                    "Z_Momentum": st.column_config.NumberColumn(format="%.2f"),
-                    "Z_Quality": st.column_config.NumberColumn(format="%.2f"),
-                    "Z_Size": st.column_config.NumberColumn(format="%.2f"),
-                    "Z_LowVolatility": st.column_config.NumberColumn(format="%.2f"),
-                    "Z_Technical": st.column_config.NumberColumn(format="%.2f"),
-                    "Risk/Reward Ratio": st.column_config.NumberColumn(format="%.2f"),
-                },
-                use_container_width=True
-            )
             
             # Re-format Market Cap for display
             filtered_df_display = filtered_df.copy()
