@@ -124,6 +124,10 @@ def fetch_spus_tickers():
     """
     Tries to fetch tickers from local CSV first, then falls back to web scraping.
     """
+    if CONFIG is None:
+        logging.error("fetch_spus_tickers: CONFIG is None. Cannot find CSV path.")
+        return []
+        
     local_path = os.path.join(BASE_DIR, CONFIG['SPUS_HOLDINGS_CSV_PATH'])
     
     # 1. Try local CSV
@@ -404,26 +408,35 @@ def parse_ticker_data(data, ticker_symbol):
             logging.warning(f"[{ticker_symbol}] {warning_msg}")
         # *** END OF NEW CHECK ***
         
+        # Calculate other indicators using append
         hist.ta.rsi(length=cfg['RSI_WINDOW'], append=True)
         hist.ta.sma(length=cfg['SHORT_MA_WINDOW'], append=True)
         hist.ta.sma(length=cfg['LONG_MA_WINDOW'], append=True)
         hist.ta.macd(fast=cfg['MACD_SHORT_SPAN'], slow=cfg['MACD_LONG_SPAN'], signal=cfg['MACD_SIGNAL_SPAN'], append=True)
         hist.ta.adx(length=cfg['ADX_WINDOW'], append=True)
-        hist.ta.atr(length=cfg['ATR_WINDOW'], append=True)
         
+        # *** FIX: Calculate ATR separately and assign it directly ***
+        atr_col = f'ATR_{cfg["ATR_WINDOW"]}'
+        atr_series = hist.ta.atr(length=cfg['ATR_WINDOW'])
+        if atr_series is not None:
+            hist[atr_col] = atr_series
+        # *** END OF FIX ***
+
+        # Define column names
         rsi_col = f'RSI_{cfg["RSI_WINDOW"]}'
         short_ma_col = f'SMA_{cfg["SHORT_MA_WINDOW"]}'
         long_ma_col = f'SMA_{cfg["LONG_MA_WINDOW"]}'
         macd_h_col = f'MACDh_{cfg["MACD_SHORT_SPAN"]}_{cfg["MACD_LONG_SPAN"]}_{cfg["MACD_SIGNAL_SPAN"]}'
         adx_col = f'ADX_{cfg["ADX_WINDOW"]}'
-        atr_col = f'ATR_{cfg["ATR_WINDOW"]}'
+        # atr_col is already defined above
 
-        parsed['RSI'] = hist[rsi_col].iloc[-1] if rsi_col in hist.columns else np.nan
-        parsed['ATR'] = hist[atr_col].iloc[-1] if atr_col in hist.columns else np.nan
-        parsed['ADX'] = hist[adx_col].iloc[-1] if adx_col in hist.columns else np.nan
+        # Parse the last value from each column
+        parsed['RSI'] = hist[rsi_col].iloc[-1] if rsi_col in hist.columns and not hist[rsi_col].isnull().all() else np.nan
+        parsed['ATR'] = hist[atr_col].iloc[-1] if atr_col in hist.columns and not hist[atr_col].isnull().all() else np.nan
+        parsed['ADX'] = hist[adx_col].iloc[-1] if adx_col in hist.columns and not hist[adx_col].isnull().all() else np.nan
 
-        last_short_ma = hist[short_ma_col].iloc[-1] if short_ma_col in hist.columns else np.nan
-        last_long_ma = hist[long_ma_col].iloc[-1] if long_ma_col in hist.columns else np.nan
+        last_short_ma = hist[short_ma_col].iloc[-1] if short_ma_col in hist.columns and not hist[short_ma_col].isnull().all() else np.nan
+        last_long_ma = hist[long_ma_col].iloc[-1] if long_ma_col in hist.columns and not hist[long_ma_col].isnull().all() else np.nan
         
         parsed['Price_vs_SMA50'] = (last_price / last_short_ma) if last_short_ma else np.nan
         parsed['Price_vs_SMA200'] = (last_price / last_long_ma) if last_long_ma else np.nan
