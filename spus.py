@@ -541,8 +541,7 @@ def calculate_support_resistance(hist_df):
         
         high_low_diff = resistance_val - support_val
         fib_161_8_level = resistance_val + (high_low_diff * 0.618) if high_low_diff > 0 else None
-        # *** SYNTAX ERROR FIX: Removed stray period ***
-        fib_61_8_level = resistance_val - (high_low_diff * 0.618) if high_low_diff > 0
+        fib_61_8_level = resistance_val - (high_low_diff * 0.618) if high_low_diff > 0 else None
         return support_val, support_date, resistance_val, resistance_date, fib_161_8_level, fib_161_8_level
     except Exception as e:
         logging.error(f"Error in deprecated calculate_support_resistance: {e}")
