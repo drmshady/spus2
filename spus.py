@@ -302,7 +302,7 @@ def parse_ticker_data(data, ticker_symbol):
         if parsed['priceToBook'] and last_price:
             bvps = last_price / parsed['priceToBook']
         
-        if parsed['trailingEps'] and bvps and parsed['trailingEps'] > 0:
+        if parsed['trailingEps'] and bvps and parsed['trailingEps'] > 0 and bvps > 0:
             parsed['grahamNumber'] = (22.5 * parsed['trailingEps'] * bvps) ** 0.5
             parsed['grahamValuation'] = "Undervalued (Graham)" if last_price < parsed['grahamNumber'] else "Overvalued (Graham)"
         else:
