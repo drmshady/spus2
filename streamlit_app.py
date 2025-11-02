@@ -964,4 +964,4 @@ def run_analysis_for_scheduler():
         if df is not None:
             print(f"Successfully generated report for {len(df)} tickers.")
         else:
-            print("Analysis failed to.
+            print("Analysis failed to produce data.")
