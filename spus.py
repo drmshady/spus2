@@ -268,6 +268,7 @@ def parse_ticker_data(data, ticker_symbol):
     source = data['source']
     
     parsed = {'ticker': ticker_symbol, 'success': True, 'source': source}
+    parsed['data_warning'] = None # <-- ADD THIS LINE
     
     try:
         # --- 0. Clean History & Get Last Price ---
@@ -394,6 +395,15 @@ def parse_ticker_data(data, ticker_symbol):
 
         # --- 6. Technical Factors ---
         cfg = CONFIG['TECHNICALS']
+        
+        # *** ADD THIS WARNING CHECK ***
+        min_hist_len = max(cfg.get('LONG_MA_WINDOW', 200), 252) # Use longest MA or 1 year
+        if len(hist) < min_hist_len:
+            warning_msg = f"Short history ({len(hist)} days). TA/Risk metrics may be N/A or unreliable."
+            parsed['data_warning'] = warning_msg
+            logging.warning(f"[{ticker_symbol}] {warning_msg}")
+        # *** END OF NEW CHECK ***
+        
         hist.ta.rsi(length=cfg['RSI_WINDOW'], append=True)
         hist.ta.sma(length=cfg['SHORT_MA_WINDOW'], append=True)
         hist.ta.sma(length=cfg['LONG_MA_WINDOW'], append=True)
@@ -475,6 +485,70 @@ def parse_ticker_data(data, ticker_symbol):
              parsed['latest_headline'] = "N/A (AV)"
              parsed['recent_news'] = "N/A (AV)"
              parsed['next_earnings_date'] = info.get('DividendDate', 'N/A (AV)') # Bad proxy
+
+
+        # --- 8. Risk Management (with Fallback & Position Sizing) ---
+        rm_config = CONFIG.get('RISK_MANAGEMENT', {})
+        atr_sl_mult = rm_config.get('ATR_STOP_LOSS_MULTIPLIER', 1.5)
+        # Get the new config values
+        fib_target_mult = 1.618 # Fibonacci 1.618 Extension Target
+        risk_per_trade_usd = rm_config.get('RISK_PER_TRADE_AMOUNT', 500) # Default $500 risk
+        
+        atr = parsed.get('ATR')
+        last_price = parsed.get('last_price')
+        support_90d = parsed.get('Support_90d')
+        
+        risk_per_share = np.nan
+        stop_loss_price = np.nan
+        
+        # Method 1: Try ATR (Primary)
+        if pd.notna(atr) and atr > 0:
+            risk_per_share = atr * atr_sl_mult
+            stop_loss_price = last_price - risk_per_share
+            parsed['SL_Method'] = "ATR"
+        
+        # Method 2: Fallback to 90-Day Low (Support)
+        elif pd.notna(support_90d) and support_90d < last_price:
+            risk_per_share = last_price - support_90d
+            stop_loss_price = support_90d
+            parsed['SL_Method'] = "90-Day Low"
+            
+        # Method 3: Final Fallback (10% Percentage)
+        else:
+            if pd.notna(last_price):
+                risk_per_share = last_price * 0.10 # 10% hard stop
+                stop_loss_price = last_price - risk_per_share
+                parsed['SL_Method'] = "10% Fallback"
+
+        # --- NEW: Calculate Take Profit, R/R, and Position Size ---
+        if pd.notna(risk_per_share) and risk_per_share > 0:
+            # Calculate Fibonacci Take Profit (1.618 extension)
+            take_profit_price = last_price + (risk_per_share * fib_target_mult)
+            reward_per_share = take_profit_price - last_price
+            
+            # Position Sizing
+            position_size_shares = risk_per_trade_usd / risk_per_share
+            position_size_usd = position_size_shares * last_price
+            
+            # Final Metrics
+            parsed['Stop Loss Price'] = stop_loss_price
+            parsed['Take Profit Price'] = take_profit_price
+            parsed['Risk/Reward Ratio'] = reward_per_share / risk_per_share
+            parsed['Risk % (to Stop)'] = (risk_per_share / last_price) * 100
+            parsed['Position Size (Shares)'] = position_size_shares
+            parsed['Position Size (USD)'] = position_size_usd
+            parsed['Risk Per Trade (USD)'] = risk_per_trade_usd
+        else:
+            # Set all to nan if no valid stop loss was found
+            parsed['Stop Loss Price'] = np.nan
+            parsed['Take Profit Price'] = np.nan
+            parsed['Risk/Reward Ratio'] = np.nan
+            parsed['Risk % (to Stop)'] = np.nan
+            parsed['Position Size (Shares)'] = np.nan
+            parsed['Position Size (USD)'] = np.nan
+            parsed['Risk Per Trade (USD)'] = risk_per_trade_usd
+            if 'SL_Method' not in parsed:
+                parsed['SL_Method'] = "N/A"
 
         return parsed
         
