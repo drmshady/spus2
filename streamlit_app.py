@@ -16,7 +16,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.stats.mstats import winsorize
-import pytz # <-- Import for timezones
 
 # --- ⭐️ 1. Set Page Configuration FIRST ⭐️ ---
 st.set_page_config(
@@ -24,9 +23,6 @@ st.set_page_config(
     page_icon="https://www.sp-funds.com/wp-content/uploads/2019/07/favicon-32x32.png", 
     layout="wide"
 )
-
-# --- Define Timezone ---
-SAUDI_TZ = pytz.timezone('Asia/Riyadh')
 
 # --- Path Fix & Import ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -51,8 +47,6 @@ try:
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import landscape, letter
     from reportlab.lib.units import inch
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_LEFT
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
@@ -327,6 +321,7 @@ def generate_quant_report(CONFIG, progress_callback=None):
     }
 
     # Save Excel
+    # *** CORRECTED LINE ***
     excel_file_path = os.path.join(BASE_DIR, CONFIG['LOGGING']['EXCEL_FILE_PATH'])
     try:
         with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
@@ -339,41 +334,25 @@ def generate_quant_report(CONFIG, progress_callback=None):
     # Save PDF
     if REPORTLAB_AVAILABLE:
         try:
-            # *** USE SAUDI TIMEZONE ***
-            timestamp = datetime.now(SAUDI_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
             base_pdf_path = os.path.splitext(excel_file_path)[0]
-            pdf_file_path = f"{base_pdf_path}_{datetime.now(SAUDI_TZ).strftime('%Y%m%d_%H%M%S')}.pdf"
-            
+            pdf_file_path = f"{base_pdf_path}_{timestamp}.pdf"
             doc = SimpleDocTemplate(pdf_file_path, pagesize=landscape(letter))
-            styles = getSampleStyleSheet()
-            styles.add(ParagraphStyle(name='Left', alignment=TA_LEFT))
+            elements = [Paragraph(f"SPUS Quant Report - {timestamp}", getSampleStyleSheet()['h1'])]
             
-            elements = [Paragraph(f"SPUS Quant Report - {timestamp}", styles['h1'])]
-            
-            # *** PDF TABLE FIT FIX: Select fewer columns ***
-            pdf_cols = ['Last Price', 'Market Cap', 'Z_Value', 'Z_Momentum', 'Z_Quality', 'Risk/Reward Ratio']
-            
+            # (Simplified PDF generation)
             for sheet_name, df_sheet in data_sheets.items():
                 if sheet_name == 'All Results (Raw)': continue # Skip full report
+                elements.append(Paragraph(sheet_name, getSampleStyleSheet()['h2']))
+                df_pdf = df_sheet.head(15).reset_index() # Show top 15
                 
-                elements.append(Paragraph(sheet_name, styles['h2']))
-                
-                # Ensure selected columns exist
-                cols_to_show = [col for col in pdf_cols if col in df_sheet.columns]
-                df_pdf = df_sheet.head(15).reset_index()[['ticker'] + cols_to_show]
-                
-                # Format for PDF
-                df_pdf = df_pdf.fillna('N/A')
-                for col in cols_to_show:
-                    if col in df_pdf.select_dtypes(include=[np.number]).columns:
-                        if col == 'Market Cap':
-                            df_pdf[col] = (df_pdf[col] / 1e9).round(1).astype(str) + ' B'
-                        else:
-                            df_pdf[col] = df_pdf[col].round(2)
+                # Truncate and format for PDF
+                df_pdf = df_pdf.select_dtypes(include=[np.number]).round(2)
+                df_pdf = pd.concat([df_sheet.head(15).reset_index(drop=False)[['ticker']], df_pdf], axis=1)
                 
                 data = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
                 
-                table = Table(data, hAlign='LEFT', colWidths=[1*inch] * len(df_pdf.columns))
+                table = Table(data, hAlign='LEFT')
                 table.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, 0), colors.green),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -397,8 +376,7 @@ def generate_quant_report(CONFIG, progress_callback=None):
     try:
         results_dir = os.path.join(BASE_DIR, CONFIG.get('LOGGING', {}).get('RESULTS_DIR', 'results_history'))
         os.makedirs(results_dir, exist_ok=True)
-        # *** USE SAUDI TIMEZONE ***
-        timestamp_csv = datetime.now(SAUDI_TZ).strftime("%Y%m%d_%H%M%S")
+        timestamp_csv = datetime.now().strftime("%Y%m%d_%H%M%S")
         csv_path = os.path.join(results_dir, f"quant_results_{timestamp_csv}.csv")
         results_df.to_csv(csv_path)
         report_progress(0.98, f"Timestamped CSV saved: {csv_path}")
@@ -439,8 +417,7 @@ def load_analysis_data(_config, run_timestamp):
         st.error("Analysis failed. Check logs.")
         return None, None, None, None
         
-    # *** USE SAUDI TIMEZONE ***
-    return df, histories, sheets, datetime.now(SAUDI_TZ).timestamp()
+    return df, histories, sheets, datetime.now().timestamp()
 
 def get_latest_reports(excel_base_path):
     """Gets paths for the latest Excel and PDF reports."""
@@ -589,27 +566,18 @@ def main():
             st.session_state.run_timestamp = time.time() 
             st.rerun()
         
-        default_weights = CONFIG.get('DEFAULT_FACTOR_WEIGHTS', {
-            "Value": 0.20, "Momentum": 0.20, "Quality": 0.20,
-            "Size": 0.10, "LowVolatility": 0.15, "Technical": 0.15
-        })
-
-        # *** ADDED RESET BUTTON ***
-        if st.button("Reset Factor Weights"):
-            for factor in default_weights.keys():
-                key_to_del = f"weight_{factor}"
-                if key_to_del in st.session_state:
-                    del st.session_state[key_to_del]
-            st.rerun()
-
         # --- 7. UI: Factor Weight Sliders ---
         st.subheader("Factor Weights")
         st.info("Adjust weights to re-rank stocks. Weights will be normalized.")
         
+        default_weights = CONFIG.get('DEFAULT_FACTOR_WEIGHTS', {
+            "Value": 0.20, "Momentum": 0.20, "Quality": 0.20,
+            "Size": 0.10, "LowVolatility": 0.15, "Technical": 0.15
+        })
+        
         weights = {}
         for factor, default in default_weights.items():
-            # *** ADDED KEY TO SLIDERS FOR RESET TO WORK ***
-            weights[factor] = st.slider(factor, 0.0, 1.0, default, 0.05, key=f"weight_{factor}")
+            weights[factor] = st.slider(factor, 0.0, 1.0, default, 0.05)
             
         # Normalize weights
         total_weight = sum(weights.values())
@@ -623,6 +591,7 @@ def main():
 
         # --- Download Buttons ---
         st.subheader("Downloads")
+        # *** CORRECTED LINE ***
         excel_path, pdf_path = get_latest_reports(os.path.join(BASE_DIR, CONFIG['LOGGING']['EXCEL_FILE_PATH']))
         
         if excel_path:
@@ -658,8 +627,7 @@ def main():
         st.error("Analysis failed to produce data.")
         st.stop()
         
-    # *** USE SAUDI TIMEZONE ***
-    st.success(f"Data loaded from analysis run at: {datetime.fromtimestamp(last_run_time, SAUDI_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    st.success(f"Data loaded from analysis run at: {datetime.fromtimestamp(last_run_time).strftime('%Y-%m-%d %H:%M:%S')}")
 
     # --- 7. UI: Dynamic Score Calculation & Filtering ---
     
@@ -936,8 +904,7 @@ def run_analysis_for_scheduler():
     Does NOT use Streamlit.
     """
     print("--- [SPUS SCHEDULER] ---")
-    # *** USE SAUDI TIMEZONE ***
-    print(f"Starting scheduled analysis at {datetime.now(SAUDI_TZ)}...")
+    print(f"Starting scheduled analysis at {datetime.now()}...")
     
     # Setup basic print logging for the scheduler
     def print_progress_callback(percent, text):
@@ -968,8 +935,7 @@ def run_analysis_for_scheduler():
     except Exception as e:
         logging.critical(f"Scheduled analysis failed with unhandled exception: {e}", exc_info=True)
         
-    # *** USE SAUDI TIMEZONE ***
-    print(f"Scheduled analysis finished at {datetime.now(SAUDI_TZ)}.")
+    print(f"Scheduled analysis finished at {datetime.now()}.")
     print("--- [SPUS SCHEDULER END] ---")
 
 
