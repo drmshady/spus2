@@ -296,7 +296,7 @@ def generate_quant_report(CONFIG, progress_callback=None):
 
     # Column name mapping for display
     results_df_display = results_df.rename(columns={
-        'last_price': 'Last Price', 'sector': 'Sector', 'marketCap': 'Market Cap',
+        'last_price': 'Last Price', 'Sector': 'Sector', 'marketCap': 'Market Cap',
         'forwardPE': 'Forward P/E', 'priceToBook': 'P/B Ratio', 'grahamValuation': 'Valuation (Graham)',
         'momentum_12m': 'Momentum (12M %)', 'volatility_1y': 'Volatility (1Y)',
         'returnOnEquity': 'ROE (%)', 'debtToEquity': 'Debt/Equity', 'profitMargins': 'Profit Margin (%)',
@@ -633,6 +633,12 @@ def main():
     
     # 1. Calculate Final Quant Score dynamically
     df = raw_df.copy()
+    
+    # *** Handle case where data loading might have failed and df is empty ***
+    if df.empty:
+        st.error("No stock data was successfully loaded. Check logs and data sources.")
+        st.stop()
+
     df['Final Quant Score'] = 0.0
     factor_z_cols = []
     for factor, weight in norm_weights.items():
@@ -652,23 +658,49 @@ def main():
     all_sectors = sorted(df['Sector'].unique())
     selected_sectors = filt_col1.multiselect("Filter by Sector:", all_sectors, default=all_sectors)
     
+    # *** ROBUST SLIDER LOGIC TO PREVENT CRASH ***
     # Market Cap Filter
-    min_cap = float(df['marketCap'].min()) / 1e9
-    max_cap = float(df['marketCap'].max()) / 1e9
-    cap_range = filt_col2.slider(
-        "Filter by Market Cap (Billions):",
-        min_value=min_cap,
-        max_value=max_cap,
-        value=(min_cap, max_cap),
-        format="%.1f B"
-    )
+    if df.empty or 'marketCap' not in df.columns or df['marketCap'].isnull().all():
+        filt_col2.info("No Market Cap data to filter.")
+        cap_range = (0.0, 0.0) # Dummy value
+    else:
+        min_cap_val = float(df['marketCap'].min())
+        max_cap_val = float(df['marketCap'].max())
+
+        if min_cap_val == max_cap_val:
+            # Only one stock, or all have same cap. Create a small range.
+            min_cap = (min_cap_val / 1e9) * 0.9 # 10% below
+            max_cap = (max_cap_val / 1e9) * 1.1 # 10% above
+            if min_cap < 0: min_cap = 0.0
+        else:
+            min_cap = min_cap_val / 1e9
+            max_cap = max_cap_val / 1e9
+        
+        # Ensure min is still less than max after calculations
+        if min_cap >= max_cap:
+            min_cap = max_cap - 1.0
+            if min_cap < 0: min_cap = 0.0
+
+        cap_range = filt_col2.slider(
+            "Filter by Market Cap (Billions):",
+            min_value=min_cap,
+            max_value=max_cap,
+            value=(min_cap, max_cap),
+            format="%.1f B"
+        )
     
+    # *** ROBUST FILTERING LOGIC ***
     # Apply filters
     filtered_df = df[
-        (df['Sector'].isin(selected_sectors)) &
-        (df['marketCap'] >= cap_range[0] * 1e9) &
-        (df['marketCap'] <= cap_range[1] * 1e9)
+        (df['Sector'].isin(selected_sectors))
     ].copy()
+
+    # Conditionally apply market cap filter
+    if not filtered_df.empty and 'marketCap' in filtered_df.columns and cap_range != (0.0, 0.0):
+         filtered_df = filtered_df[
+            (filtered_df['marketCap'].ge(cap_range[0] * 1e9)) &
+            (filtered_df['marketCap'].le(cap_range[1] * 1e9))
+         ]
     
     # 3. Sort by new dynamic score
     filtered_df.sort_values(by='Final Quant Score', ascending=False, inplace=True)
@@ -720,7 +752,8 @@ def main():
             
             # Re-format Market Cap for display
             filtered_df_display = filtered_df.copy()
-            filtered_df_display['Market Cap'] = filtered_df_display['marketCap'] / 1e9
+            if 'marketCap' in filtered_df_display.columns:
+                filtered_df_display['Market Cap'] = filtered_df_display['marketCap'] / 1e9
             
             st.dataframe(
                 filtered_df_display.head(20)[display_cols],
@@ -759,8 +792,9 @@ def main():
             
             # --- Key Metrics ---
             kpi_cols = st.columns(4)
+            # *** KEYERROR FIXES APPLIED BELOW ***
             kpi_cols[0].metric("Final Quant Score", f"{ticker_data['Final Quant Score']:.3f}")
-            kpi_cols[1].metric("Last Price", f"${ticker_data['Last Price']:.2f}")
+            kpi_cols[1].metric("Last Price", f"${ticker_data['last_price']:.2f}")
             kpi_cols[2].metric("Market Cap", f"${ticker_data['marketCap']/1e9:.1f} B")
             kpi_cols[3].metric("Trend (50/200 MA)", ticker_data['Trend (50/200 Day MA)'])
             
@@ -797,10 +831,11 @@ def main():
             # --- Risk & Value Metrics ---
             st.subheader("Risk & Value Metrics")
             risk_val_cols = st.columns(4)
-            risk_val_cols[0].metric("ATR-Based Stop Loss", f"${ticker_data['Stop Loss (ATR)']:.2f}", help=f"Risk %: {ticker_data['Risk % (to Stop)']:.1f}%")
-            risk_val_cols[1].metric("ATR-Based Take Profit", f"${ticker_data['Take Profit (ATR)']:.2f}")
+            # *** KEYERROR FIXES APPLIED BELOW ***
+            risk_val_cols[0].metric("ATR-Based Stop Loss", f"${ticker_data['Stop Loss Price']:.2f}", help=f"Risk %: {ticker_data['Risk % (to Stop)']:.1f}%")
+            risk_val_cols[1].metric("ATR-Based Take Profit", f"${ticker_data['Take Profit Price']:.2f}")
             risk_val_cols[2].metric("Risk/Reward Ratio", f"{ticker_data['Risk/Reward Ratio']:.2f}")
-            risk_val_cols[3].metric("Valuation (Graham)", ticker_data['Valuation (Graham)'])
+            risk_val_cols[3].metric("Valuation (Graham)", ticker_data['grahamValuation'])
             
             # --- Raw Data Expander ---
             with st.expander("View All Raw Data for " + selected_ticker):
