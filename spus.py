@@ -152,9 +152,10 @@ def fetch_data_yfinance(ticker_obj):
         info = ticker_obj.info
         
         # Add earnings data
+        # *** CORRECTED FOR DEPRECATION WARNING ***
         earnings = {
-            "earnings": ticker_obj.earnings,
-            "quarterly_earnings": ticker_obj.quarterly_earnings,
+            "earnings": ticker_obj.income_stmt,
+            "quarterly_earnings": ticker_obj.quarterly_income_stmt,
             "calendar": ticker_obj.calendar,
             "news": ticker_obj.news
         }
@@ -279,6 +280,7 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['forwardPE'] = info.get('forwardPE')
             parsed['priceToBook'] = info.get('priceToBook')
             parsed['marketCap'] = info.get('marketCap')
+            # *** CORRECTED FOR KEYERROR ***
             parsed['Sector'] = info.get('sector', 'Unknown')
             parsed['enterpriseToEbitda'] = info.get('enterpriseToEbitda')
             parsed['freeCashflow'] = info.get('freeCashflow')
@@ -287,6 +289,7 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['forwardPE'] = float(info.get('ForwardPE', 'nan'))
             parsed['priceToBook'] = float(info.get('PriceToBookRatio', 'nan'))
             parsed['marketCap'] = float(info.get('MarketCapitalization', 'nan'))
+            # *** CORRECTED FOR KEYERROR ***
             parsed['Sector'] = info.get('Sector', 'Unknown')
             parsed['enterpriseToEbitda'] = float(info.get('EVToEBITDA', 'nan'))
             parsed['freeCashflow'] = None # Not in AV Overview
@@ -344,9 +347,27 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['debtToEquity'] = float(info.get('DebtToEquityRatio', 'nan'))
 
         # Earnings volatility (simplified)
+        # *** CORRECTED FOR DEPRECATION WARNING ***
         if source == "yfinance" and earnings_data.get("quarterly_earnings") is not None and not earnings_data["quarterly_earnings"].empty:
-            q_eps = earnings_data["quarterly_earnings"]['Earnings']
-            parsed['earnings_volatile'] = q_eps.std() / q_eps.abs().mean() > 0.5 # Coeff of variation
+            
+            quarterly_data = earnings_data["quarterly_earnings"]
+            
+            if 'Net Income' in quarterly_data.index:
+                q_eps = quarterly_data.loc['Net Income']
+            elif 'Earnings' in quarterly_data.columns:
+                 # Fallback for old structure, just in case
+                 q_eps = quarterly_data['Earnings']
+            else:
+                 logging.warning(f"[{ticker_symbol}] Could not find 'Net Income' (index) or 'Earnings' (column) in quarterly data.")
+                 q_eps = pd.Series([np.nan]) # Create a series to avoid errors
+                 
+            q_eps = pd.to_numeric(q_eps, errors='coerce').dropna()
+
+            if not q_eps.empty and q_eps.abs().mean() != 0:
+                parsed['earnings_volatile'] = (q_eps.std() / q_eps.abs().mean()) > 0.5 # Coeff of variation
+            else:
+                parsed['earnings_volatile'] = np.nan
+                
             parsed['earnings_negative'] = parsed.get('trailingEps', 0) < 0
         else:
             parsed['earnings_volatile'] = np.nan
@@ -520,9 +541,8 @@ def calculate_support_resistance(hist_df):
         
         high_low_diff = resistance_val - support_val
         fib_161_8_level = resistance_val + (high_low_diff * 0.618) if high_low_diff > 0 else None
-        fib_61_8_level = resistance_val - (high_low_diff * 0.618) if high_low_diff > 0 else None
-
-        return support_val, support_date, resistance_val, resistance_date, fib_61_8_level, fib_161_8_level
+        fib_61_8_level = resistance_val - (high_low_diff * 0.618) if high_low_diff > 0.
+        return support_val, support_date, resistance_val, resistance_date, fib_161_8_level, fib_161_8_level
     except Exception as e:
         logging.error(f"Error in deprecated calculate_support_resistance: {e}")
         return None, None, None, None, None, None
