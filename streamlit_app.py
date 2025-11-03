@@ -5,615 +5,745 @@ import time
 from datetime import datetime
 import sys
 import glob
-import numpy as np
-import streamlit.components.v1 as components
-import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import openpyxl
-from openpyxl.styles import Font
-import json
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from scipy.stats.mstats import winsorize
-import pytz # <-- IMPORT FOR TIMEZONE
+import numpy as np # Import numpy
+import streamlit.components.v1 as components # Import components
 
 # --- ⭐️ 1. Set Page Configuration FIRST ⭐️ ---
+# This must be the first Streamlit command.
 st.set_page_config(
     page_title="SPUS Quant Analyzer",
     page_icon="https://www.sp-funds.com/wp-content/uploads/2019/07/favicon-32x32.png", 
     layout="wide"
 )
 
-# --- DEFINE TIMEZONE ---
-SAUDI_TZ = pytz.timezone('Asia/Riyadh')
-
-# --- Path Fix & Import ---
+# --- إصلاح مسار الاستيراد (Import Path Fix) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
+# --- نهاية الإصلاح ---
 
+
+# --- استيراد الدوال من ملف spus.py الخاص بك ---
 try:
     from spus import (
         load_config,
         fetch_spus_tickers,
-        process_ticker
-        # All other functions are now integrated or deprecated
+        process_ticker,
+        calculate_support_resistance,
+        calculate_financials_and_fair_price,
+        # --- ⭐️ REMOVED get_sector_valuation_averages ---
     )
 except ImportError as e:
-    st.error(f"Error: Failed to import 'spus.py'. Details: {e}")
+    st.error("خطأ: فشل استيراد 'spus.py'.")
+    st.error(f"تفاصيل الخطأ: {e}")
+    st.stop()
+except Exception as e:
+    st.error(f"خطأ غير متوقع أثناء استيراد spus.py: {e}")
     st.stop()
 
-# --- ReportLab Import (Optional) ---
+# --- استيراد المكتبات اللازمة لوظيفة التحليل الرئيسية ---
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import openpyxl
+from openpyxl.styles import Font
+
 try:
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import landscape, letter
     from reportlab.lib.units import inch
-    from reportlab.lib.styles import ParagraphStyle
-    from reportlab.lib.enums import TA_LEFT
     REPORTLAB_AVAILABLE = True
 except ImportError:
     REPORTLAB_AVAILABLE = False
-    logging.warning("Module 'reportlab' not found. PDF report generation will be disabled.")
+    logging.warning("مكتبة 'reportlab' غير موجودة. لن يتم إنشاء تقارير PDF.")
 
-# --- ⭐️ 2. Custom CSS (Unchanged from original) ⭐️ ---
+
+# --- ⭐️ 2. UPDATED: Custom CSS for Modern Minimal Theme (WITH FIX) ⭐️ ---
 def load_css():
-    """Injects custom CSS for a modern, minimal, card-based theme."""
+    """
+    Injects custom CSS for a modern, minimal, card-based theme
+    with shadow effects. It respects Streamlit's light/dark modes.
+    """
     st.markdown(f"""
     <style>
+        /* --- Import Google Font (Inter) --- */
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+        /* --- ⭐️⭐️⭐️ CSS FIX HERE ⭐️⭐️⭐️ --- */
+        /* --- Base Font & Colors --- */
+        /* We target the main containers, not ALL elements with [class*="st-"].
+        This prevents overriding Streamlit's internal icon fonts.
+        */
         html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {{
             font-family: 'Inter', sans-serif;
         }}
-        h1 {{ font-weight: 700; }}
-        h2 {{ font-weight: 600; }}
-        h3 {{ font-weight: 600; margin-top: 20px; margin-bottom: 0px; }}
+        /* --- ⭐️⭐️⭐️ END OF FIX ⭐️⭐️⭐️ --- */
+
+
+        /* --- Custom Headers --- */
+        h1 {{
+            font-weight: 700;
+            color: var(--text-color);
+        }}
+        h2 {{
+            font-weight: 600;
+            color: var(--text-color);
+        }}
+        h3 {{
+            font-weight: 600;
+            color: var(--text-color);
+            margin-top: 20px;
+            margin-bottom: 0px;
+        }}
+        
+        /* --- Main App Container --- */
         .main .block-container {{
-            padding-top: 2rem; padding-bottom: 2rem;
-            padding-left: 2.5rem; padding-right: 2.5rem;
+            padding-top: 2rem;
+            padding-bottom: 2rem;
+            padding-left: 2.5rem;
+            padding-right: 2.5rem;
         }}
+
+        /* --- Sidebar Styling --- */
         [data-testid="stSidebar"] {{
-            border-right: 1px solid var(--gray-800); padding: 1.5rem;
+            border-right: 1px solid var(--gray-800);
+            padding: 1.5rem;
         }}
-        [data-testid="stSidebar"] h2 {{ font-size: 1.5rem; font-weight: 700; }}
-        [data-testid="stSidebar"] .stButton > button, [data-testid="stSidebar"] .stDownloadButton > button {{
-            width: 100%; border-radius: 8px; font-weight: 600;
+        [data-testid="stSidebar"] h2 {{
+            font-size: 1.5rem;
+            font-weight: 700;
+        }}
+        [data-testid="stSidebar"] .stButton > button {{
+            width: 100%;
+            border-radius: 8px;
+            font-weight: 600;
+        }}
+        [data-testid="stSidebar"] .stDownloadButton > button {{
+            width: 100%;
+            border-radius: 8px;
+            font-weight: 500;
+            border: 1px solid var(--gray-700);
+        }}
+        [data-testid="stSidebar"] [data-testid="stExpander"] {{
+            border: none;
+            box-shadow: none;
+            background-color: transparent;
+        }}
+
+        /* --- Tab Bar Styling --- */
+        [data-testid="stTabs"] {{
+            margin-top: 1rem;
         }}
         [data-testid="stTabs"] button[role="tab"] {{
-            border-radius: 8px 8px 0 0; padding: 10px 15px; font-weight: 500;
+            border-radius: 8px 8px 0 0;
+            padding: 10px 15px;
+            font-weight: 500;
+        }}
+        [data-testid="stTabs"] button[aria-selected="true"] {{
+            background-color: var(--secondary-background-color);
         }}
         [data-testid="stTabContent"] {{
             background-color: var(--secondary-background-color);
-            border: 1px solid var(--gray-800); border-top: none;
-            padding: 1.5rem; border-radius: 0 0 8px 8px;
+            border: 1px solid var(--gray-800);
+            border-top: none;
+            padding: 1.5rem;
+            border-radius: 0 0 8px 8px;
         }}
+
+        /* --- ⭐️ UPDATED: Ticker List Button Styling --- */
+        
+        /* ⭐️ REMOVED .ticker-list-container {{...}} */
+
+        /* Target buttons ONLY inside the first column's vertical block */
         [data-testid="stVerticalBlock"]:nth-child(1) [data-testid="stButton"] button {{
-            border: 1px solid var(--gray-800); font-weight: 500;
-            text-align: left; padding: 0.5rem 0.75rem;
-            transition: all 0.1s ease-in-out; border-radius: 8px;
-            margin-bottom: 4px;
+            border: 1px solid var(--gray-800);
+            font-weight: 500;
+            text-align: left; /* Align text left */
+            padding: 0.5rem 0.75rem; /* Add padding */
+            transition: all 0.1s ease-in-out;
+            border-radius: 8px; /* Match other elements */
+            margin-bottom: 4px; /* Add space between buttons */
+        }}
+
+        /* Secondary button (non-selected) */
+        [data-testid="stVerticalBlock"]:nth-child(1) [data-testid="stButton"] button[kind="secondary"] {{
+            background-color: var(--secondary-background-color);
+            color: var(--text-color);
         }}
         [data-testid="stVerticalBlock"]:nth-child(1) [data-testid="stButton"] button[kind="secondary"]:hover {{
-            border-color: var(--primary); color: var(--primary);
+            border-color: var(--primary);
+            color: var(--primary);
+            background-color: var(--secondary-background-color);
         }}
+        [data-testid="stVerticalBlock"]:nth-child(1) [data-testid="stButton"] button[kind="secondary"]:focus {{
+            box-shadow: 0 0 0 2px var(--primary-light);
+            border-color: var(--primary);
+        }}
+
+       /* Primary button (SELECTED) */
         [data-testid="stVerticalBlock"]:nth-child(1) [data-testid="stButton"] button[kind="primary"] {{
-            border-color: #D30000; background-color: #D30000;
-            color: white; font-weight: 600;
+            border-color: #D30000; /* ⭐️ CHANGED: Dark Red Border */
+            background-color: #D30000; /* ⭐️ CHANGED: Dark Red Background */
+            color: white; /* ⭐️ CHANGED: White text for contrast */
+            font-weight: 600;
         }}
+        [data-testid="stVerticalBlock"]:nth-child(1) [data-testid="stButton"] button[kind="primary"]:hover {{
+            border-color: #A00000; /* ⭐️ ADDED: Darker red on hover */
+            background-color: #A00000; /* ⭐️ ADDED: Darker red on hover */
+        }}
+        /* --- ⭐️ END UPDATED CSS --- */
+
+        /* --- Metric & Detail Styling --- */
         [data-testid="stMetric"] {{
             background-color: var(--background-color);
-            border: 1px solid var(--gray-800); border-radius: 8px;
+            border: 1px solid var(--gray-800);
+            border-radius: 8px;
             padding: 1rem 1.25rem;
         }}
+        [data-testid="stMetric"] label {{
+            font-weight: 500;
+            color: var(--gray-600);
+        }}
+        
+        /* --- ⭐️ FIX for Metric & Expander Arrows ⭐️ --- */
+        /* This targets the container for Label + Delta */
+        [data-testid="stMetric"] > div[data-testid="stVerticalBlock"] > div:nth-child(1) {{
+             display: flex;
+             justify-content: space-between;
+             align-items: center;
+             flex-wrap: nowrap; /* Prevent wrapping */
+        }}
+        
+        /* This targets the metric delta (the arrow) */
+        [data-testid="stMetricDelta"] {{
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            flex-wrap: nowrap;
+        }}
+
+        /* This targets the expander header */
+        [data-testid="stExpander"] summary {{
+            display: flex;
+            align-items: center;
+            flex-wrap: nowrap; /* Prevent wrapping */
+        }}
+        
+        /* This targets the expander arrow in the sidebar */
+        [data-testid="stSidebar"] [data-testid="stExpander"] summary {{
+            display: flex;
+            align-items: center;
+            flex-wrap: nowrap;
+        }}
+        /* --- ⭐️ END FIX --- */
+        
+        /* --- Divider Styling --- */
+        hr {{
+            margin-top: 1rem;
+            margin-bottom: 1rem;
+            background: var(--gray-800);
+        }}
+        
+        /* --- Markdown links --- */
+        .main a, .main a:visited {{
+            color: var(--primary);
+            text-decoration: none;
+        }}
+        .main a:hover {{
+            text-decoration: underline;
+        }}
+
     </style>
     """, unsafe_allow_html=True)
 
 
-# --- ⭐️ 3. Core Analysis Logic (Modularized) ⭐️ ---
+# --- ⭐️ ALL HELPER FUNCTIONS (UNCHANGED) ⭐️ ---
+# All backend and data functions are kept identical.
 
-def calculate_robust_zscore_grouped(group_series):
-    """Applies robust Z-score (MAD) to a pandas group."""
-    series = pd.to_numeric(group_series, errors='coerce')
-    median = series.median()
-    mad = (series - median).abs().median()
-    if mad == 0:
-        # Fallback to standard Z-score if MAD is zero
-        std = series.std()
-        if std == 0 or pd.isna(std):
-            return pd.Series(0.0, index=group_series.index)
-        mean = series.mean()
-        return (series - mean) / std
-    z_score = (series - median) / (1.4826 * mad)
-    return z_score
+@st.cache_data
+def load_excel_data(excel_path):
+    """ (This function is unchanged) """
+    abs_excel_path = os.path.join(BASE_DIR, excel_path)
+    if not os.path.exists(abs_excel_path):
+        return None, None
+    try:
+        mod_time = os.path.getmtime(abs_excel_path)
+        xls = pd.ExcelFile(abs_excel_path)
+        sheet_names = xls.sheet_names
+        data_sheets = {}
+        for sheet in sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet, index_col=0)
+            data_sheets[sheet] = df
+        return data_sheets, mod_time
+    except Exception as e:
+        st.error(f"خطأ أثناء قراءة ملف الإكسل: {e}")
+        return None, None
 
-def calculate_all_z_scores(df, config):
-    """
-    Calculates sector-relative Z-scores for all factor components.
-    Implements statistical robustness checks.
-    """
-    logging.info("Calculating Z-Scores...")
-    df_analysis = df.copy()
-    
-    factor_defs = config.get('FACTOR_DEFINITIONS', {})
-    stat_config = config.get('STATISTICAL', {})
-    win_limit = stat_config.get('WINSORIZE_LIMIT', 0.05)
-    min_sector_size = stat_config.get('MIN_SECTOR_SIZE_FOR_MEDIAN', 5)
-
-    # Get sector counts and identify small sectors
-    sector_counts = df_analysis['Sector'].value_counts()
-    small_sectors = sector_counts[sector_counts < min_sector_size].index
-    logging.info(f"Small sectors (<{min_sector_size} stocks) found: {list(small_sectors)}. Global medians will be used.")
-
-    all_components = []
-    for factor in factor_defs.keys():
-        all_components.extend(factor_defs[factor]['components'])
-    
-    # 1. Pre-process all components (Winsorize, Handle Inversions, Calculate Ratios)
-    for comp in all_components:
-        col = comp['name']
-        if col not in df_analysis.columns:
-            logging.warning(f"Factor component '{col}' not found in data. Skipping.")
-            continue
-            
-        # A. Winsorize/Clip outliers
-        df_analysis[col] = pd.to_numeric(df_analysis[col], errors='coerce')
-        # Use clip for robustness against extreme NaNs/Infs
-        lower = df_analysis[col].quantile(win_limit)
-        upper = df_analysis[col].quantile(1 - win_limit)
-        if pd.notna(lower) and pd.notna(upper) and lower < upper:
-            df_analysis[col] = df_analysis[col].clip(lower, upper)
-        
-        # B. Handle inversions (e.g., P/E -> E/P) or ratios
-        # This implementation calculates Z-score on relative ratio (Stock/Sector)
-        # which is simpler than inverting.
-        
-        # C. Calculate Sector/Global Medians
-        global_median = df_analysis[col].median()
-        if global_median == 0: global_median = 1e-6 # Avoid zero division
-        
-        sector_medians = df_analysis.groupby('Sector')[col].median()
-        sector_medians.loc[small_sectors] = global_median # Replace small sectors
-        sector_medians = sector_medians.fillna(global_median) # Fill any NaN sectors
-        sector_medians[sector_medians == 0] = global_median # Avoid zero division
-        
-        df_analysis[f"{col}_Sector_Median"] = df_analysis['Sector'].map(sector_medians)
-        
-        # D. Calculate Relative Ratio (Stock / Sector Median)
-        # We Z-score this ratio. A ratio > 1 is "better" if high_is_good=True
-        df_analysis[f"{col}_Rel_Ratio"] = df_analysis[col] / df_analysis[f"{col}_Sector_Median"]
-        
-        # E. Calculate Z-Score for the relative ratio
-        z_col_name = f"Z_{col}"
-        df_analysis[z_col_name] = df_analysis.groupby('Sector')[f"{col}_Rel_Ratio"].transform(calculate_robust_zscore_grouped)
-        
-        # F. Adjust Z-Score based on 'high_is_good'
-        if not comp['high_is_good']:
-            df_analysis[z_col_name] = df_analysis[z_col_name] * -1.0
-            
-        df_analysis[z_col_name] = df_analysis[z_col_name].fillna(0) # Final fill
-
-    # 2. Combine components into final factor Z-Scores
-    logging.info("Combining components into final Z-Scores...")
-    for factor, details in factor_defs.items():
-        z_cols_to_average = [f"Z_{c['name']}" for c in details['components'] if f"Z_{c['name']}" in df_analysis.columns]
-        if z_cols_to_average:
-            df_analysis[f"Z_{factor}"] = df_analysis[z_cols_to_average].mean(axis=1)
-        else:
-            df_analysis[f"Z_{factor}"] = 0.0
-            
-    return df_analysis
-
-
-def generate_quant_report(CONFIG, progress_callback=None):
-    """
-    Core logic, decoupled from Streamlit.
-    Fetches data, runs analysis, calculates Z-scores, and generates reports.
-    """
-    
-    def report_progress(percent, text):
-        if progress_callback:
-            progress_callback(percent, text)
-        logging.info(f"Progress: {percent*100:.0f}% - {text}")
-
-    report_progress(0.01, "Starting analysis...")
-    
-    # --- 1. Fetch Tickers ---
-    report_progress(0.05, "(1/7) Fetching SPUS ticker list...")
-    ticker_symbols = fetch_spus_tickers()
-    if not ticker_symbols:
-        report_progress(1.0, "Error: No ticker symbols found. Analysis cancelled.")
-        return None, None, None
-        
-    exclude_tickers = CONFIG.get('EXCLUDE_TICKERS', [])
-    ticker_symbols = [t for t in ticker_symbols if t not in exclude_tickers]
-    
-    limit = CONFIG.get('TICKER_LIMIT', 0)
-    if limit > 0:
-        ticker_symbols = ticker_symbols[:limit]
-        report_progress(0.07, f"(1/7) Analysis limited to {limit} tickers.")
-    
-    # --- 2. Process Tickers Concurrently ---
-    MAX_WORKERS = CONFIG.get('MAX_CONCURRENT_WORKERS', 10)
-    report_progress(0.1, f"(2/7) Fetching data for {len(ticker_symbols)} tickers (Max Workers: {MAX_WORKERS})...")
-    
-    results_list = []
-    all_histories = {}
-    processed_count = 0
-    total_tickers = len(ticker_symbols)
-    start_time = time.time()
-
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_ticker = {executor.submit(process_ticker, ticker): ticker for ticker in ticker_symbols}
-        
-        for future in as_completed(future_to_ticker):
-            ticker = future_to_ticker[future]
-            try:
-                result = future.result(timeout=60) # 60s timeout per ticker
-                if result.get('success', False):
-                    results_list.append(result)
-                    if 'hist_df' in result:
-                        all_histories[ticker] = result.pop('hist_df') # Store hist separately
-                else:
-                    logging.error(f"Failed to process {ticker}: {result.get('error', 'Unknown error')}")
-            except Exception as e:
-                logging.error(f"Error processing {ticker} in main loop: {e}", exc_info=True)
-            
-            processed_count += 1
-            percent_done = 0.1 + (0.6 * (processed_count / total_tickers))
-            report_progress(percent_done, f"(2/7) Processing: {ticker} ({processed_count}/{total_tickers})")
-
-    end_time = time.time()
-    report_progress(0.7, f"(3/7) Data fetch complete. Time taken: {end_time - start_time:.2f}s")
-
-    if not results_list:
-        report_progress(1.0, "Error: No data successfully processed. Analysis cancelled.")
-        return None, None, None
-        
-    results_df = pd.DataFrame(results_list)
-    results_df.set_index('ticker', inplace=True)
-    
-    # --- 3. Risk Management Calcs ---
-    # *** THIS SECTION IS NOW REMOVED, AS IT'S DONE IN SPUS.PY ***
-    report_progress(0.75, "(4/7) Risk metrics calculated in spus.py.")
-    
-    # --- 4. Factor Z-Score Calculation ---
-    report_progress(0.8, "(5/7) Calculating robust Z-Scores...")
-    results_df = calculate_all_z_scores(results_df, CONFIG)
-    
-    # --- 5. Save Reports (Excel, PDF, CSV) ---
-    report_progress(0.9, "(6/7) Generating reports...")
-    
-    # Note: Final Quant Score is NOT calculated here. It's done dynamically in the UI.
-    # We sort by a default factor (e.g., Value) for the static reports.
-    results_df.sort_values(by='Z_Value', ascending=False, inplace=True)
-
-    # Column name mapping for display
-    results_df_display = results_df.rename(columns={
-        'last_price': 'Last Price', 'Sector': 'Sector', 'marketCap': 'Market Cap',
-        'forwardPE': 'Forward P/E', 'priceToBook': 'P/B Ratio', 'grahamValuation': 'Valuation (Graham)',
-        'momentum_12m': 'Momentum (12M %)', 'volatility_1y': 'Volatility (1Y)',
-        'returnOnEquity': 'ROE (%)', 'debtToEquity': 'Debt/Equity', 'profitMargins': 'Profit Margin (%)',
-        'beta': 'Beta', 'RSI': 'RSI (14)', 'ADX': 'ADX (14)',
-        'Stop Loss Price': 'Stop Loss', 'Take Profit Price': 'Take Profit'
-    })
-    
-    # Format percentages for display
-    pct_cols = ['ROE (%)', 'Profit Margin (%)', 'Momentum (12M %)', 'Risk % (to Stop)']
-    for col in pct_cols:
-        if col in results_df_display.columns:
-            results_df_display[col] = results_df_display[col] * 100
-
-    # Create data sheets for Excel/PDF
-    data_sheets = {
-        'Top 20 (By Value)': results_df_display.sort_values(by='Z_Value', ascending=False).head(20),
-        'Top 20 (By Momentum)': results_df_display.sort_values(by='Z_Momentum', ascending=False).head(20),
-        'Top 20 (By Quality)': results_df_display.sort_values(by='Z_Quality', ascending=False).head(20),
-        'Top Bullish Technicals': results_df_display.sort_values(by='Z_Technical', ascending=False).head(20),
-        'Top Undervalued (Graham)': results_df_display[results_df_display['Valuation (Graham)'] == 'Undervalued (Graham)'].sort_values(by='Z_Value', ascending=False).head(20),
-        'All Results (Raw)': results_df # Full raw data
+def apply_comprehensive_styling(df):
+    """ (This function is no longer used, but kept just in case) """
+    RELEVANT_COLUMNS = [
+        'Ticker', 'Sector', 'Last Price', 
+        'Final Quant Score', 'Valuation (Graham)', 'Relative P/E', 'Relative P/B',
+        'MACD_Signal', 'Trend (50/200 Day MA)', 'Price vs. Levels',
+        'Risk/Reward Ratio', '1-Year Momentum (12-1) (%)', 'Volatility (1Y)', 
+        'Return on Equity (ROE)', 'Debt/Equity', 'Dividend Yield (%)', 
+        'Forward P/E', 'Sector P/E',
+        'Cut Loss Level (Support)', 'Fib 161.8% Target', 'Next Earnings Date'
+    ]
+    cols_to_show = [col for col in RELEVANT_COLUMNS if col in df.columns]
+    df_display = df[cols_to_show].copy()
+    text_style_cols = [col for col in 
+                       ['Valuation (Graham)', 'MACD_Signal', 'Price vs. Levels', 'Relative P/E', 'Relative P/B'] 
+                       if col in cols_to_show]
+    def highlight_text(val):
+        val_str = str(val).lower()
+        if 'undervalued' in val_str or 'bullish' in val_str:
+            return 'color: #00A600'
+        elif 'overvalued' in val_str or 'bearish' in val_str:
+            return 'color: #D30000'
+        elif 'near support' in val_str:
+            return 'color: #004FB0'
+        return ''
+    styler = df_display.style.apply(lambda x: x.map(highlight_text), subset=text_style_cols)
+    numeric_gradient_cols = [
+        'Final Quant Score', 'Risk/Reward Ratio', 
+        '1-Year Momentum (12-1) (%)', 'Volatility (1Y)', 
+        'Risk % (to Support)', 'Forward P/E'
+    ]
+    for col in numeric_gradient_cols:
+        if col in df_display.columns:
+            df_display[col] = pd.to_numeric(df_display[col], errors='coerce')
+    # ... (gradient code removed for brevity, as it's not used) ...
+    format_dict = {
+        'Sector P/E': '{:.2f}', 'Sector P/B': '{:.2f}', 'Forward P/E': '{:.2f}',
+        'Final Quant Score': '{:.3f}',
+        'Volatility (1Y)': '{:.3f}',
+        '1-Year Momentum (12-1) (%)': '{:.2f}%',
+        'Return on Equity (ROE)': '{:.2f}%',
+        'Debt/Equity': '{:.2f}',
+        'Dividend Yield (%)': '{:.2f}%',
     }
-
-    # Save Excel
-    excel_file_path = os.path.join(BASE_DIR, CONFIG['LOGGING']['EXCEL_FILE_PATH'])
-    try:
-        with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
-            for sheet_name, df_sheet in data_sheets.items():
-                df_sheet.to_excel(writer, sheet_name=sheet_name, index=True)
-        report_progress(0.92, f"Excel report saved: {excel_file_path}")
-    except Exception as e:
-        logging.error(f"Failed to save Excel file: {e}")
-
-    # Save PDF
-    if REPORTLAB_AVAILABLE:
-        try:
-            # *** USE SAUDI TIMEZONE ***
-            timestamp = datetime.now(SAUDI_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
-            base_pdf_path = os.path.splitext(excel_file_path)[0]
-            pdf_file_path = f"{base_pdf_path}_{datetime.now(SAUDI_TZ).strftime('%Y%m%d_%H%M%S')}.pdf"
-            
-            doc = SimpleDocTemplate(pdf_file_path, pagesize=landscape(letter))
-            styles = getSampleStyleSheet()
-            styles.add(ParagraphStyle(name='Left', alignment=TA_LEFT))
-            
-            elements = [Paragraph(f"SPUS Quant Report - {timestamp}", styles['h1'])]
-            
-            # *** PDF TABLE FIT FIX: Select fewer columns ***
-            pdf_cols = ['Last Price', 'Z_Value', 'Z_Momentum', 'Z_Quality', 'Risk/Reward Ratio']
-            
-            for sheet_name, df_sheet in data_sheets.items():
-                if sheet_name == 'All Results (Raw)': continue # Skip full report
-                
-                elements.append(Paragraph(sheet_name, styles['h2']))
-                
-                # Ensure selected columns exist
-                cols_to_show = [col for col in pdf_cols if col in df_sheet.columns]
-                df_pdf = df_sheet.head(15).reset_index()[['ticker'] + cols_to_show]
-                
-                # Format for PDF
-                df_pdf = df_pdf.fillna('N/A')
-                for col in cols_to_show:
-                    if col in df_pdf.select_dtypes(include=[np.number]).columns:
-                        df_pdf[col] = df_pdf[col].round(2)
-                
-                data = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
-                
-                # Adjust column widths
-                col_widths = [1.2*inch] + [1*inch] * len(cols_to_show)
-                table = Table(data, hAlign='LEFT', colWidths=col_widths)
-                
-                table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.green),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, 0), 8),
-                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
-                    ('FONTSIZE', (0, 1), (-1, -1), 7),
-                ]))
-                elements.append(table)
-                elements.append(Spacer(1, 0.25*inch))
-                
-            doc.build(elements)
-            report_progress(0.95, f"PDF report saved: {pdf_file_path}")
-        except Exception as e:
-            logging.error(f"Failed to create PDF report: {e}")
-    
-    # Save timestamped CSV result
-    try:
-        results_dir = os.path.join(BASE_DIR, CONFIG.get('LOGGING', {}).get('RESULTS_DIR', 'results_history'))
-        os.makedirs(results_dir, exist_ok=True)
-        # *** USE SAUDI TIMEZONE ***
-        timestamp_csv = datetime.now(SAUDI_TZ).strftime("%Y%m%d_%H%M%S")
-        csv_path = os.path.join(results_dir, f"quant_results_{timestamp_csv}.csv")
-        results_df.to_csv(csv_path)
-        report_progress(0.98, f"Timestamped CSV saved: {csv_path}")
-    except Exception as e:
-        logging.error(f"Failed to save timestamped CSV: {e}")
-
-    report_progress(1.0, "Analysis complete.")
-    
-    # Return the raw df, histories, and display sheets
-    return results_df, all_histories, data_sheets
-
-# --- ⭐️ 4. Streamlit UI Functions ⭐️ ---
-
-@st.cache_data(show_spinner=False, ttl=3600) # Cache for 1 hour
-def load_analysis_data(_config, run_timestamp):
-    """
-    Streamlit cache wrapper for the core analysis function.
-    The run_timestamp parameter is used to bust the cache when
-    the user clicks "Run Analysis".
-    """
-    
-    # This context allows the core function to write to the Streamlit UI
-    progress_bar = st.progress(0, text="Starting analysis...")
-    status_text = st.empty()
-    
-    def st_progress_callback(percent, text):
-        progress_bar.progress(percent, text=text)
-        status_text.info(text)
-        
-    logging.info(f"Cache miss or manual run. Running full analysis... (Timestamp: {run_timestamp})")
-    
-    df, histories, sheets = generate_quant_report(_config, st_progress_callback)
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    if df is None:
-        st.error("Analysis failed. Check logs.")
-        return None, None, None, None
-        
-    # *** USE SAUDI TIMEZONE ***
-    return df, histories, sheets, datetime.now(SAUDI_TZ).timestamp()
+    styler = styler.format(format_dict, na_rep="N/A", subset=[col for col in format_dict if col in df_display.columns])
+    return styler
 
 def get_latest_reports(excel_base_path):
-    """Gets paths for the latest Excel and PDF reports."""
+    """ (This function is unchanged) """
     base_dir = os.path.dirname(excel_base_path)
     excel_name_no_ext = os.path.splitext(os.path.basename(excel_base_path))[0]
-    
     latest_pdf = None
     pdf_pattern = os.path.join(base_dir, f"{excel_name_no_ext}_*.pdf")
     pdf_files = glob.glob(pdf_pattern)
     if pdf_files:
         latest_pdf = max(pdf_files, key=os.path.getmtime)
-        
     excel_path = excel_base_path if os.path.exists(excel_base_path) else None
     return excel_path, latest_pdf
 
-def create_price_chart(hist_df, ticker):
-    """Creates an interactive Plotly Price Chart with SMAs and MACD."""
-    
-    cfg = CONFIG['TECHNICALS']
-    short_ma_col = f'SMA_{cfg["SHORT_MA_WINDOW"]}'
-    long_ma_col = f'SMA_{cfg["LONG_MA_WINDOW"]}'
-    macd_col = f'MACD_{cfg["MACD_SHORT_SPAN"]}_{cfg["MACD_LONG_SPAN"]}_{cfg["MACD_SIGNAL_SPAN"]}'
-    macd_h_col = f'MACDh_{cfg["MACD_SHORT_SPAN"]}_{cfg["MACD_LONG_SPAN"]}_{cfg["MACD_SIGNAL_SPAN"]}'
-    macd_s_col = f'MACDs_{cfg["MACD_SHORT_SPAN"]}_{cfg["MACD_LONG_SPAN"]}_{cfg["MACD_SIGNAL_SPAN"]}'
+def calculate_robust_zscore(series):
+    """ (This function is unchanged) """
+    series = pd.to_numeric(series, errors='coerce')
+    median = series.median()
+    mad = (series - median).abs().median()
+    if mad == 0:
+        return 0
+    z_score = (series - median) / (1.4826 * mad)
+    return z_score
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                        vertical_spacing=0.03, subplot_titles=(f'{ticker} Price', 'MACD'), 
-                        row_width=[0.2, 0.7])
-
-    # Price Chart (Row 1)
-    fig.add_trace(go.Candlestick(x=hist_df.index,
-                                open=hist_df['Open'],
-                                high=hist_df['High'],
-                                low=hist_df['Low'],
-                                close=hist_df['Close'],
-                                name='Price'),
-                  row=1, col=1)
-    
-    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df[short_ma_col], 
-                             line=dict(color='orange', width=1), name=f'SMA {cfg["SHORT_MA_WINDOW"]}'),
-                  row=1, col=1)
-    
-    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df[long_ma_col], 
-                             line=dict(color='blue', width=1), name=f'SMA {cfg["LONG_MA_WINDOW"]}'),
-                  row=1, col=1)
-
-    # MACD Chart (Row 2)
-    fig.add_trace(go.Bar(x=hist_df.index, y=hist_df[macd_h_col], 
-                         name='Histogram',
-                         marker_color=np.where(hist_df[macd_h_col] < 0, 'red', 'green')),
-                  row=2, col=1)
-    
-    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df[macd_col], 
-                             line=dict(color='blue', width=1), name='MACD'),
-                  row=2, col=1)
-    
-    fig.add_trace(go.Scatter(x=hist_df.index, y=hist_df[macd_s_col], 
-                             line=dict(color='orange', width=1), name='Signal'),
-                  row=2, col=1)
-
-    fig.update_layout(
-        title_text=f"{ticker} Technical Chart",
-        xaxis_rangeslider_visible=False,
-        height=500,
-        legend_orientation="h",
-        legend_yanchor="bottom",
-        legend_y=1.02,
-        legend_xanchor="right",
-        legend_x=1
-    )
-    fig.update_yaxes(title_text="Price ($)", row=1, col=1)
-    fig.update_yaxes(title_text="MACD", row=2, col=1)
-    
-    return fig
-
-def create_radar_chart(ticker_data, factor_cols):
-    """Creates a Plotly Radar Chart for factor explainability."""
-    
-    values = ticker_data[factor_cols].values.flatten().tolist()
-    theta = [col.replace('Z_', '') for col in factor_cols]
-    
-    fig = go.Figure()
-
-    fig.add_trace(go.Scatterpolar(
-        r=values + [values[0]], # Close the loop
-        theta=theta + [theta[0]], # Close the loop
-        fill='toself',
-        name='Factor Z-Score'
-    ))
-
-    fig.update_layout(
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[min(-2, min(values)-0.5), max(2, max(values)+0.5)] # Dynamic range
-            )
-        ),
-        title=f"Factor Profile for {ticker_data.name}",
-        height=400
-    )
-    return fig
-
-# --- ⭐️ 5. Main Streamlit Application ⭐️ ---
-
-def main():
-    
-    # --- Initialize Session State ---
-    if 'selected_ticker' not in st.session_state:
-        st.session_state.selected_ticker = None
-    if 'run_timestamp' not in st.session_state:
-        # This key triggers the first run
-        st.session_state.run_timestamp = time.time() 
-    
-    # --- Load CSS ---
-    load_css()
-    
-    # --- Load Config ---
-    global CONFIG # Make CONFIG globally available in main()
-    CONFIG = load_config('config.json')
-    if CONFIG is None:
-        st.error("FATAL: config.json not found. App cannot start.")
-        st.stop()
-
-    # --- Setup Logging ---
-    log_file_path = os.path.join(BASE_DIR, CONFIG.get('LOGGING', {}).get('LOG_FILE_PATH', 'spus_analysis.log'))
+@st.cache_data(show_spinner=False)
+def run_full_analysis(CONFIG):
+    """ (This function is unchanged) """
+    progress_bar = st.progress(0, text="Starting analysis...")
+    status_text = st.empty()
+    status_text.info("يتم الآن بدء التحليل...")
+    MAX_RISK_USD = 50
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_file_path, mode='a'),
-            logging.StreamHandler() # Also log to console
+            logging.FileHandler(os.path.join(BASE_DIR, CONFIG['LOG_FILE_PATH'])),
+            logging.StreamHandler()
         ]
     )
+    status_text.info("... (1/7) جارٍ جلب قائمة الرموز (Tickers)...")
+    ticker_symbols = fetch_spus_tickers() 
+    if not ticker_symbols:
+        status_text.warning("لم يتم العثور على رموز. تم إلغاء التحليل.")
+        return None, None
+    exclude_tickers = CONFIG['EXCLUDE_TICKERS']
+    ticker_symbols = [ticker for ticker in ticker_symbols if ticker not in exclude_tickers]
+    if CONFIG['TICKER_LIMIT'] > 0:
+        ticker_symbols = ticker_symbols[:CONFIG['TICKER_LIMIT']]
+        status_text.info(f"التحليل يقتصر على أول {CONFIG['TICKER_LIMIT']} شركة فقط.")
+    momentum_data = {}
+    volatility_data = {} 
+    rsi_data = {}
+    last_prices = {}
+    support_resistance_levels = {}
+    trend_data = {}
+    macd_data = {}
+    financial_data = {}
+    processed_tickers = set()
+    news_data = {}
+    headline_data = {}
+    calendar_data = {}
+    MAX_WORKERS = CONFIG['MAX_CONCURRENT_WORKERS']
+    status_text.info(f"... (2/7) جارٍ جلب البيانات (Concurrent) باستخدام {MAX_WORKERS} عامل...")
+    start_time = time.time()
+    processed_count = 0
+    total_tickers = len(ticker_symbols)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        future_to_ticker = {
+            executor.submit(process_ticker, ticker): ticker
+            for ticker in ticker_symbols
+        }
+        for i, future in enumerate(as_completed(future_to_ticker)):
+            ticker = future_to_ticker[future]
+            try:
+                result = future.result(timeout=60)
+                if result['success']:
+                    ticker = result['ticker']
+                    processed_tickers.add(ticker)
+                    if result['momentum_12_1'] is not None: momentum_data[ticker] = result['momentum_12_1']
+                    if result['volatility_1y'] is not None: volatility_data[ticker] = result['volatility_1y']
+                    if result['rsi'] is not None: rsi_data[ticker] = result['rsi']
+                    if result['last_price'] is not None: last_prices[ticker] = result['last_price']
+                    if result['support_resistance'] is not None: support_resistance_levels[ticker] = result['support_resistance']
+                    trend_data[ticker] = result['trend']
+                    macd_data[ticker] = macd_data.get(ticker, {})
+                    if result['macd'] is not None: macd_data[ticker]['MACD'] = result['macd']
+                    if result['signal_line'] is not None: macd_data[ticker]['Signal_Line'] = result['signal_line']
+                    if result['hist_val'] is not None: macd_data[ticker]['Histogram'] = result['hist_val']
+                    if result['macd_signal'] is not None: macd_data[ticker]['Signal'] = result['macd_signal']
+                    financial_data[ticker] = result['financial_dict']
+                    news_data[ticker] = result['recent_news']
+                    headline_data[ticker] = result['latest_headline']
+                    calendar_data[ticker] = result['earnings_date']
+            except Exception as e:
+                logging.error(f"Error processing {ticker} in main loop: {e}")
+            processed_count = i + 1
+            progress_percentage = processed_count / total_tickers
+            progress_bar.progress(progress_percentage, text=f"Processing: {ticker} ({processed_count}/{total_tickers})")
+    end_time = time.time()
+    status_text.info(f"... (3/7) انتهى جلب البيانات. الوقت المستغرق: {end_time - start_time:.2f} ثانية.")
+    status_text.info("... (4/7) جارٍ حساب المخاطر/العوائد (R/R)...")
+    progress_bar.progress(0.9, text="Calculating Risk/Reward...")
+    threshold_percentage = CONFIG['PRICE_THRESHOLD_PERCENT']
+    comparison_results = {}
+    risk_percentages = {}
+    reward_percentages = {}
+    risk_reward_ratios = {}
+    for ticker in last_prices.keys():
+        last_price = last_prices.get(ticker)
+        levels = support_resistance_levels.get(ticker)
+        comparison_results[ticker] = 'Price or S/R levels not available'
+        risk_percentages[ticker] = "N/A"
+        reward_percentages[ticker] = "N/A"
+        risk_reward_ratios[ticker] = "N/A"
+        if last_price is not None and levels is not None and last_price > 0:
+            support = levels.get('Support')
+            resistance = levels.get('Resistance')
+            if support is not None and resistance is not None and resistance > support:
+                support_diff = last_price - support
+                resistance_diff = resistance - last_price
+                risk_pct = (support_diff / last_price) * 100
+                reward_pct = (resistance_diff / last_price) * 100
+                risk_percentages[ticker] = risk_pct
+                reward_percentages[ticker] = reward_pct
+                if risk_pct > 0:
+                    risk_reward_ratios[ticker] = reward_pct / risk_pct
+                else:
+                    risk_reward_ratios[ticker] = "N/A (Price below Support)"
+                support_diff_percentage = ((last_price - support) / support) * 100 if support != 0 else float('inf')
+                if abs(support_diff_percentage) <= threshold_percentage:
+                    comparison_results[ticker] = 'Near Support'
+                elif abs(((last_price - resistance) / resistance) * 100) <= threshold_percentage:
+                     comparison_results[ticker] = 'Near Resistance'
+                elif last_price > resistance:
+                    comparison_results[ticker] = 'Above Resistance'
+                elif last_price < support:
+                    comparison_results[ticker] = 'Below Support'
+                else:
+                    comparison_results[ticker] = 'Between Support and Resistance'
+    status_text.info("... (5/7) جارٍ تجميع النتائج وحساب Z-Scores...")
+    progress_bar.progress(0.95, text="Aggregating and Scoring...")
+    tickers_to_report = list(last_prices.keys()) 
+    if not tickers_to_report:
+        status_text.warning("لا توجد بيانات كافية لإنشاء التقرير.")
+        return None, None
+    results_list = []
+    for ticker in tickers_to_report:
+        fin_info = financial_data.get(ticker, {})
+        support_resistance = support_resistance_levels.get(ticker, {})
+        shares_to_buy_str = "N/A"
+        try:
+            last_price_num = pd.to_numeric(last_prices.get(ticker), errors='coerce')
+            support_price_num = pd.to_numeric(support_resistance.get('Support'), errors='coerce')
+            if pd.notna(last_price_num) and pd.notna(support_price_num):
+                risk_per_share = last_price_num - support_price_num
+                if risk_per_share > 0:
+                    shares_to_buy = MAX_RISK_USD / risk_per_share
+                    shares_to_buy_str = f"{shares_to_buy:.2f}"
+                elif risk_per_share <= 0:
+                    shares_to_buy_str = "N/A (Price below Support)"
+        except Exception:
+            pass
+        result_data = {
+            'Ticker': ticker,
+            'Last Price': last_prices.get(ticker, pd.NA),
+            'Sector': fin_info.get('Sector'),
+            'Market Cap': fin_info.get('Market Cap'),
+            'Valuation (Graham)': fin_info.get('Valuation (Graham)'),
+            'Fair Price (Graham)': fin_info.get('Graham Number'),
+            'Forward P/E': fin_info.get('Forward P/E'),
+            'P/B Ratio': fin_info.get('P/B Ratio'),
+            'MACD_Signal': macd_data.get(ticker, {}).get('Signal'),
+            'Trend (50/200 Day MA)': trend_data.get(ticker, "N/A"),
+            'Price vs. Levels': comparison_results.get(ticker, "N/A"),
+            'Cut Loss Level (Support)': support_resistance.get('Support'),
+            'Risk % (to Support)': risk_percentages.get(ticker, "N/A"),
+            'Fib 161.8% Target': support_resistance.get('Fib_161_8'),
+            'Risk/Reward Ratio': risk_reward_ratios.get(ticker, pd.NA),
+            'Shares to Buy ($50 Risk)': shares_to_buy_str,
+            'Recent News (48h)': news_data.get(ticker, "N/A"),
+            'Next Earnings Date': calendar_data.get(ticker, "N/A"),
+            'Latest Headline': headline_data.get(ticker, "N/A"),
+            'Dividend Yield (%)': fin_info.get('Dividend Yield'),
+            'Return on Equity (ROE)': fin_info.get('Return on Equity (ROE)'),
+            'Debt/Equity': fin_info.get('Debt/Equity'), 
+            '1-Year Momentum (12-1) (%)': momentum_data.get(ticker, pd.NA),
+            'Volatility (1Y)': volatility_data.get(ticker, pd.NA),
+        }
+        results_list.append(result_data)
+    results_df = pd.DataFrame(results_list)
+    status_text.info("... (5/7) Calculating sector medians...")
+    results_df['Forward P/E'] = pd.to_numeric(results_df['Forward P/E'], errors='coerce')
+    results_df['P/B Ratio'] = pd.to_numeric(results_df['P/B Ratio'], errors='coerce')
+    sector_pe_median = results_df.groupby('Sector')['Forward P/E'].median()
+    sector_pb_median = results_df.groupby('Sector')['P/B Ratio'].median()
+    results_df['Sector P/E'] = results_df['Sector'].map(sector_pe_median)
+    results_df['Sector P/B'] = results_df['Sector'].map(sector_pb_median)
+    def get_relative_signal(row_val, sector_val):
+        if pd.isna(row_val) or pd.isna(sector_val) or sector_val <= 0:
+            return "N/A"
+        if row_val < sector_val:
+            return "Undervalued (Sector)"
+        else:
+            return "Overvalued (Sector)"
+    results_df['Relative P/E'] = results_df.apply(lambda row: get_relative_signal(row['Forward P/E'], row['Sector P/E']), axis=1)
+    results_df['Relative P/B'] = results_df.apply(lambda row: get_relative_signal(row['P/B Ratio'], row['Sector P/B']), axis=1)
+    FACTOR_WEIGHTS = {
+        'VALUE': 0.25, 'MOMENTUM': 0.15, 'QUALITY': 0.20, 
+        'SIZE': 0.10, 'LOW_VOL': 0.15, 'TECHNICAL': 0.15
+    }
+    graham_price = pd.to_numeric(results_df['Fair Price (Graham)'], errors='coerce')
+    last_price_pd = pd.to_numeric(results_df['Last Price'], errors='coerce')
+    last_price_safe = last_price_pd.replace(0, pd.NA)
+    results_df['Value_Discount'] = graham_price / last_price_safe
+    stock_pe = pd.to_numeric(results_df['Forward P/E'], errors='coerce')
+    sector_pe = pd.to_numeric(results_df['Sector P/E'], errors='coerce')
+    results_df['Value_Discount_PE'] = sector_pe / stock_pe
+    results_df['Z_Value_Graham'] = results_df.groupby('Sector')['Value_Discount'].transform(calculate_robust_zscore).fillna(0)
+    results_df['Z_Value_Rel_PE'] = results_df.groupby('Sector')['Value_Discount_PE'].transform(calculate_robust_zscore).fillna(0)
+    results_df['Z_Value'] = (results_df['Z_Value_Graham'] + results_df['Z_Value_Rel_PE']) / 2
+    results_df['Z_Momentum'] = results_df.groupby('Sector')['1-Year Momentum (12-1) (%)'].transform(calculate_robust_zscore).fillna(0)
+    results_df['Z_Profitability'] = results_df.groupby('Sector')['Return on Equity (ROE)'].transform(calculate_robust_zscore).fillna(0)
+    results_df['Z_Leverage'] = results_df.groupby('Sector')['Debt/Equity'].transform(calculate_robust_zscore).fillna(0) * -1 
+    results_df['Z_Payout'] = results_df.groupby('Sector')['Dividend Yield (%)'].transform(calculate_robust_zscore).fillna(0)
+    results_df['Z_Quality'] = (results_df['Z_Profitability'] + results_df['Z_Leverage'] + results_df['Z_Payout']) / 3
+    results_df['Market Cap'] = pd.to_numeric(results_df['Market Cap'], errors='coerce')
+    results_df['Z_Size'] = results_df.groupby('Sector')['Market Cap'].transform(calculate_robust_zscore).fillna(0) * -1 
+    results_df['Z_Low_Volatility'] = results_df.groupby('Sector')['Volatility (1Y)'].transform(calculate_robust_zscore).fillna(0) * -1
+    def get_technical_score(row):
+        score = 0
+        if str(row['MACD_Signal']).startswith('Bullish'):
+            score += 1
+        if str(row['Trend (50/200 Day MA)']) == 'Confirmed Uptrend':
+            score += 1
+        if str(row['Price vs. Levels']) == 'Near Support':
+            score += 0.5
+        return score
+    results_df['Technical_Score'] = results_df.apply(get_technical_score, axis=1)
+    results_df['Z_Technical'] = results_df.groupby('Sector')['Technical_Score'].transform(calculate_robust_zscore).fillna(0)
+    results_df['Final Quant Score'] = (
+        (results_df['Z_Value'] * FACTOR_WEIGHTS['VALUE']) +
+        (results_df['Z_Momentum'] * FACTOR_WEIGHTS['MOMENTUM']) +
+        (results_df['Z_Quality'] * FACTOR_WEIGHTS['QUALITY']) +
+        (results_df['Z_Size'] * FACTOR_WEIGHTS['SIZE']) +
+        (results_df['Z_Low_Volatility'] * FACTOR_WEIGHTS['LOW_VOL']) +
+        (results_df['Z_Technical'] * FACTOR_WEIGHTS['TECHNICAL'])
+    )
+    results_df['Risk/Reward Ratio'] = pd.to_numeric(results_df['Risk/Reward Ratio'], errors='coerce')
+    results_df['Risk % (to Support)'] = pd.to_numeric(results_df['Risk % (to Support)'], errors='coerce')
+    results_df['Final Quant Score'] = pd.to_numeric(results_df['Final Quant Score'], errors='coerce')
+    results_df.sort_values(by='Final Quant Score', ascending=False, inplace=True)
+    results_df.set_index('Ticker', inplace=True)
+    data_sheets = {
+        'Top 20 Final Quant Score': results_df.head(20),
+        'Top Quant & High R-R': results_df[pd.to_numeric(results_df['Risk/Reward Ratio'], errors='coerce') > 1].head(20).sort_values(by='Risk/Reward Ratio', ascending=False),
+        'Top 10 Undervalued (Rel & Graham)': results_df[
+            (results_df['Valuation (Graham)'] == 'Undervalued (Graham)') |
+            (results_df['Relative P/E'] == 'Undervalued (Sector)')
+        ].sort_values(by='Final Quant Score', ascending=False).head(10),
+        'New Bullish Crossovers (MACD)': results_df[results_df['MACD_Signal'] == 'Bullish Crossover (Favorable)'].sort_values(by='Final Quant Score', ascending=False).head(10),
+        'Stocks Currently Near Support': results_df[results_df['Price vs. Levels'] == 'Near Support'].sort_values(by='Final Quant Score', ascending=False).head(10),
+        'Top 10 by Market Cap (SPUS)': results_df.sort_values(by='Market Cap', ascending=False).head(10),
+        'All Results': results_df
+    }
+    excel_file_path = os.path.join(BASE_DIR, CONFIG['EXCEL_FILE_PATH'])
+    try:
+        with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
+            format_cols = ['Last Price', 'Fair Price (Graham)', 'Cut Loss Level (Support)',
+                           'Fib 161.8% Target', 'Final Quant Score', 'Risk/Reward Ratio',
+                           'Risk % (to Support)', 'Dividend Yield (%)', 
+                           '1-Year Momentum (12-1) (%)',
+                           'Volatility (1Y)',
+                           'Return on Equity (ROE)', 'Debt/Equity',
+                           'Forward P/E', 'Sector P/E', 'P/B Ratio', 'Sector P/B']
+            def format_for_excel(df):
+                df_copy = df.copy()
+                for col in format_cols:
+                    if col in df_copy.columns:
+                        df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce').apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+                return df_copy
+            for sheet_name, df in data_sheets.items():
+                 format_for_excel(df).to_excel(writer, sheet_name=sheet_name, index=True)
+        status_text.info(f"تم حفظ تقرير الإكسل بنجاح: {excel_file_path}")
+    except Exception as e:
+        st.error(f"فشل حفظ ملف الإكسل: {e}")
+        return None, None
+    status_text.info("... (7/7) جارٍ حفظ تقرير PDF...")
+    progress_bar.progress(0.99, text="Saving PDF report...")
+    if REPORTLAB_AVAILABLE:
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            base_pdf_path = os.path.splitext(excel_file_path)[0]
+            pdf_file_path = f"{base_pdf_path}_{timestamp}.pdf"
+            doc = SimpleDocTemplate(pdf_file_path, pagesize=landscape(letter))
+            elements = []
+            styles = getSampleStyleSheet()
+            def create_pdf_table(title, df):
+                if df.empty:
+                    return [Paragraph(f"No data for: {title}", styles['h2']), Spacer(1, 0.1*inch)]
+                df_formatted = format_for_excel(df.reset_index())
+                cols_map = {
+                    'Top 10 by Market Cap (from SPUS)': (['Ticker', 'Market Cap', 'Sector', 'Last Price', 'Final Quant Score', 'Relative P/E', 'Risk/Reward Ratio', 'Volatility (1Y)', 'Dividend Yield (%)'], ['Ticker', 'Mkt Cap', 'Sector', 'Price', 'Score', 'Rel. P/E', 'R/R', 'Volatility', 'Div %']),
+                    'Top 20 by Final Quant Score': (['Ticker', 'Final Quant Score', 'Sector', 'Last Price', 'Relative P/E', 'Valuation (Graham)', 'Risk/Reward Ratio', 'Volatility (1Y)', '1-Year Momentum (12-1) (%)'], ['Ticker', 'Score', 'Sector', 'Price', 'Rel. P/E', 'Graham', 'R/R', 'Volatility', 'Momentum']),
+                    'Top Quant & High R-R': (['Ticker', 'Final Quant Score', 'Risk/Reward Ratio', 'Relative P/E', 'Last Price', 'Volatility (1Y)', 'Cut Loss Level (Support)'], ['Ticker', 'Score', 'R/R', 'Rel. P/E', 'Price', 'Volatility', 'Stop Loss']),
+                    'Top 10 Undervalued (Rel & Graham)': (['Ticker', 'Final Quant Score', 'Relative P/E', 'Valuation (Graham)', 'Last Price', 'Fair Price (Graham)', 'Sector P/E', 'Forward P/E'], ['Ticker', 'Score', 'Rel. P/E', 'Graham', 'Price', 'Graham Price', 'Sector P/E', 'Stock P/E']),
+                    'New Bullish Crossovers (MACD)': (['Ticker', 'Final Quant Score', 'MACD_Signal', 'Last Price', 'Trend (50/200 Day MA)', 'Risk/Reward Ratio', 'Cut Loss Level (Support)', 'Relative P/E'], ['Ticker', 'Score', 'MACD', 'Price', 'Trend', 'R/R', 'Stop Loss', 'Rel. P/E']),
+                    'Stocks Currently Near Support': (['Ticker', 'Final Quant Score', 'Price vs. Levels', 'Last Price', 'Risk % (to Support)', 'Risk/Reward Ratio', 'Cut Loss Level (Support)', 'Volatility (1Y)'], ['Ticker', 'Score', 'vs. Levels', 'Price', 'Risk %', 'R/R', 'Stop Loss', 'Volatility'])
+                }
+                if title in cols_map:
+                    cols, headers = cols_map[title]
+                    existing_cols = [c for c in cols if c in df_formatted.columns]
+                    df_pdf = df_formatted[existing_cols]
+                    df_pdf.columns = [headers[cols.index(c)] for c in existing_cols]
+                else:
+                    df_pdf = df_formatted
+                data = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
+                formatted_data = [data[0]]
+                for row in data[1:]:
+                    new_row = [str(item) for item in row]
+                    formatted_data.append(new_row)
+                table = Table(formatted_data, hAlign='LEFT')
+                table_style = TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.green),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                    ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, 0), 10),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                    ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                    ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                    ('ALTERNATINGBACKGROUND', (0, 1), (-1, -1), [colors.Color(0.9, 0.9, 0.9), colors.Color(0.98, 0.98, 0.98)])
+                ])
+                table.setStyle(table_style)
+                SUMMARY_DESCRIPTIONS = {
+                    'Top 10 by Market Cap (from SPUS)': "This table shows the 10 largest companies in the SPUS portfolio, sorted by their market capitalization.",
+                    'Top 20 by Final Quant Score': "This table ranks the top 20 stocks based on the combined 6-factor quantitative score (Value, Momentum, Quality, Size, Volatility, Technicals).",
+                    'Top Quant & High R-R': "This table filters the top-ranked stocks to show only those with a favorable Risk/Reward Ratio (greater than 1).",
+                    'Top 10 Undervalued (Rel & Graham)': "This table highlights the top 10 stocks considered 'Undervalued' by either the Graham Number or relative sector P/E.",
+                    'New Bullish Crossovers (MACD)': "This table lists stocks that have just generated a 'Bullish Crossover' MACD signal, a positive momentum indicator.",
+                    'Stocks Currently Near Support': "This table identifies stocks whose current price is very close to their 90-day technical support level, a potential entry point."
+                }
+                elements = [Paragraph(title, styles['h2']), Spacer(1, 0.1*inch), table, Spacer(1, 0.1*inch)]
+                summary_text = SUMMARY_DESCRIPTIONS.get(title)
+                if summary_text:
+                    summary_paragraph = Paragraph(summary_text, styles['BodyText'])
+                    elements.append(summary_paragraph)
+                elements.append(Spacer(1, 0.25*inch))
+                return elements
+            elements.append(Paragraph(f"SPUS Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['h1']))
+            elements.extend(create_pdf_table("Top 10 by Market Cap (from SPUS)", data_sheets['Top 10 by Market Cap (SPUS)']))
+            elements.extend(create_pdf_table("Top 20 by Final Quant Score", data_sheets['Top 20 Final Quant Score']))
+            elements.extend(create_pdf_table("Top Quant & High R-R", data_sheets['Top Quant & High R-R']))
+            elements.extend(create_pdf_table("Top 10 Undervalued (Rel & Graham)", data_sheets['Top 10 Undervalued (Rel & Graham)']))
+            elements.extend(create_pdf_table("New Bullish Crossovers (MACD)", data_sheets['New Bullish Crossovers (MACD)']))
+            elements.extend(create_pdf_table("Stocks Currently Near Support", data_sheets['Stocks Currently Near Support']))
+            doc.build(elements)
+            status_text.info(f"تم حفظ تقرير PDF بنجاح: {pdf_file_path}")
+        except Exception as e:
+            st.error(f"فشل إنشاء تقرير PDF: {e}")
+    else:
+        st.warning("تم تخطي إنشاء PDF. (مكتبة reportlab غير مثبتة)")
+    
+    progress_bar.progress(1.0, text="اكتمل التحليل!")
+    status_text.success("اكتمل التحليل بنجاح!")
+    
+    return data_sheets, datetime.now().timestamp()
+# --- ⭐️ END UPDATED FUNCTION ---
 
-    # --- Sidebar ---
+
+# --- ⭐️ 3. UPDATED: واجهة مستخدم Streamlit الرئيسية ⭐️ ---
+def main():
+    
+    # --- ⭐️ NEW: Initialize Session State ---
+    if 'selected_ticker' not in st.session_state:
+        st.session_state.selected_ticker = None
+    # --- ⭐️ NEW: Add scroll flags ---
+    if 'scroll_to_detail' not in st.session_state:
+        st.session_state.scroll_to_detail = False
+    if 'active_anchor_id' not in st.session_state:
+        st.session_state.active_anchor_id = None
+    # --- END NEW ---
+
+    # --- ⭐️ Call CSS loader
+    load_css()
+
+    CONFIG = load_config('config.json')
+
+    if CONFIG is None:
+        st.error("خطأ فادح: لم يتم العثور على ملف 'config.json'. لا يمكن تشغيل التطبيق.")
+        st.error(f"المسار المتوقع: {os.path.join(BASE_DIR, 'config.json')}")
+        st.stop()
+
+    EXCEL_FILE = CONFIG.get('EXCEL_FILE_PATH', './spus_analysis_results.xlsx')
+    ABS_EXCEL_PATH = os.path.join(BASE_DIR, EXCEL_FILE)
+
+    # --- ⭐️ Redesigned Sidebar ---
     with st.sidebar:
-        st.image("https://www.sp-funds.com/wp-content/uploads/2022/02/SP-Funds-Logo-Primary-Wht-1.svg", width=200)
+        # --- ⭐️⭐️⭐️ LOGO CHANGE HERE ⭐️⭐️⭐️ ---
+        st.image("تنزيل.jpg", width=200) # <-- ⭐️ CHANGED to your local logo file
+        # --- ⭐️⭐️⭐️ END LOGO CHANGE ⭐️⭐️⭐️ ---
         st.title("SPUS Quant Analyzer")
-        st.markdown("Research-Grade Multi-Factor Analysis")
+        st.markdown("تحليل كمي متقدم لمحفظة SPUS.")
+        
         st.divider()
 
         st.subheader("Controls")
-        if st.button("🔄 Run Full Analysis", type="primary"):
+        if st.button("🔄 Run Full Analysis (تشغيل التحليل الكامل)", type="primary"):
+            st.cache_data.clear() 
+            st.success("Cache cleared. Running fresh analysis...")
+            # Reset selected ticker on full run
             st.session_state.selected_ticker = None
-            # Update timestamp to bust the cache
-            st.session_state.run_timestamp = time.time() 
+            st.session_state.scroll_to_detail = False # Reset scroll flag
+            st.session_state.active_anchor_id = None # Reset scroll flag
             st.rerun()
-        
-        default_weights = CONFIG.get('DEFAULT_FACTOR_WEIGHTS', {
-            "Value": 0.20, "Momentum": 0.20, "Quality": 0.20,
-            "Size": 0.10, "LowVolatility": 0.15, "Technical": 0.15
-        })
-        
-        # *** ADDED RESET BUTTON ***
-        if st.button("Reset Factor Weights"):
-            for factor in default_weights.keys():
-                # This slider key format must match the key in st.slider below
-                key_to_del = f"weight_{factor}" 
-                if key_to_del in st.session_state:
-                    del st.session_state[key_to_del]
-            st.rerun()
-
-        # --- 7. UI: Factor Weight Sliders ---
-        st.subheader("Factor Weights")
-        st.info("Adjust weights to re-rank stocks. Weights will be normalized.")
-        
-        weights = {}
-        for factor, default in default_weights.items():
-            # *** ADDED KEY TO SLIDERS FOR RESET TO WORK ***
-            weights[factor] = st.slider(factor, 0.0, 1.0, default, 0.05, key=f"weight_{factor}")
-            
-        # Normalize weights
-        total_weight = sum(weights.values())
-        norm_weights = {f: (w / total_weight) if total_weight > 0 else 0 for f, w in weights.items()}
-        
-        with st.expander("Normalized Weights"):
-            for factor, weight in norm_weights.items():
-                st.write(f"{factor}: {weight*100:.1f}%")
         
         st.divider()
 
-        # --- Download Buttons ---
         st.subheader("Downloads")
-        excel_path, pdf_path = get_latest_reports(os.path.join(BASE_DIR, CONFIG['LOGGING']['EXCEL_FILE_PATH']))
+        excel_path, pdf_path = get_latest_reports(ABS_EXCEL_PATH)
         
         if excel_path:
             with open(excel_path, "rb") as file:
@@ -624,7 +754,7 @@ def main():
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
         else:
-            st.info("Run analysis to generate reports.")
+            st.info("قم بتشغيل التحليل أولاً لإنشاء التقارير.")
 
         if pdf_path:
             with open(pdf_path, "rb") as file:
@@ -636,355 +766,221 @@ def main():
                 )
         
         st.divider()
-        st.info("Analysis data is cached for 1 hour. Click 'Run' for fresh data.")
+        
+        with st.expander("Glossary & Abbreviations (قاموس المصطلحات)"):
+            st.markdown("""
+            * **Quant**: Quantitative (تحليل كمي)
+            * **P/E**: Price-to-Earnings (السعر إلى الأرباح)
+            * **P/B**: Price-to-Book (السعر إلى القيمة الدفترية)
+            * **ROE**: Return on Equity (العائد على حقوق الملكية)
+            * **D/E**: Debt-to-Equity (الدين إلى حقوق الملكية)
+            * **MACD**: Moving Average Convergence Divergence
+            * **R/R**: Risk/Reward Ratio (نسبة المخاطرة إلى العائد)
+            * **Volatility (1Y)**: 1-Year Volatility (التقلب السنوي)
+            * **Momentum (12-1)**: 12-Month Momentum (skipping last month)
+            """)
+        
+        st.divider()
+        st.info("اضغط 'Run' لبدء التحليل. سيتم تخزين النتائج مؤقتًا.")
+    
+    # --- ⭐️ End Redesigned Sidebar ---
 
-    # --- Main Page ---
+
+    # --- Main Page Content ---
     st.title("SPUS Quantitative Dashboard")
-    
-    # --- Load Data (from cache or new run) ---
-    raw_df, all_histories, data_sheets, last_run_time = load_analysis_data(CONFIG, st.session_state.run_timestamp)
-    
-    if raw_df is None:
-        st.error("Analysis failed to produce data.")
-        st.stop()
-        
-    # *** USE SAUDI TIMEZONE ***
-    st.success(f"Data loaded from analysis run at: {datetime.fromtimestamp(last_run_time, SAUDI_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    st.markdown("Welcome to the SPUS Quantitative Analysis tool. All data is analyzed using a 6-factor model (Value, Momentum, Quality, Size, Volatility, Technicals) relative to sector peers.")
 
-    # --- 7. UI: Dynamic Score Calculation & Filtering ---
+    with st.spinner("Running full analysis... This may take several minutes on first run..."):
+        data_sheets, mod_time = run_full_analysis(CONFIG)
     
-    # 1. Calculate Final Quant Score dynamically
-    df = raw_df.copy()
-    
-    # *** Handle case where data loading might have failed and df is empty ***
-    if df.empty:
-        st.error("No stock data was successfully loaded. Check logs and data sources.")
-        st.stop()
-
-    df['Final Quant Score'] = 0.0
-    factor_z_cols = []
-    for factor, weight in norm_weights.items():
-        z_col = f"Z_{factor}"
-        factor_z_cols.append(z_col)
-        if z_col in df.columns:
-            df[f"Weighted_{z_col}"] = df[z_col] * weight
-            df['Final Quant Score'] += df[f"Weighted_{z_col}"]
-        else:
-            logging.warning(f"Z-Score column {z_col} not found in dataframe.")
-
-    # 2. Apply Filters
-    st.subheader("Filters")
-    filt_col1, filt_col2 = st.columns(2)
-    
-    # Sector Filter
-    all_sectors = sorted(df['Sector'].unique())
-    selected_sectors = filt_col1.multiselect("Filter by Sector:", all_sectors, default=all_sectors)
-    
-    # *** ROBUST SLIDER LOGIC TO PREVENT CRASH ***
-    # Market Cap Filter
-    if df.empty or 'marketCap' not in df.columns or df['marketCap'].isnull().all():
-        filt_col2.info("No Market Cap data to filter.")
-        cap_range = (0.0, 0.0) # Dummy value
+    if data_sheets is None:
+        st.warning("لم يتم العثور على ملف نتائج (`spus_analysis_results.xlsx`).")
+        st.info("👈 يرجى الضغط على زر 'Run Full Analysis' في الشريط الجانبي لبدء التحليل الأول.")
     else:
-        min_cap_val = float(df['marketCap'].min())
-        max_cap_val = float(df['marketCap'].max())
+        st.success(f"يتم الآن عرض البيانات من آخر تحليل (بتاريخ: {datetime.fromtimestamp(mod_time).strftime('%Y-%m-%d %H:%M:%S')})")
 
-        if min_cap_val == max_cap_val:
-            # Only one stock, or all have same cap. Create a small range.
-            min_cap = (min_cap_val / 1e9) * 0.9 # 10% below
-            max_cap = (max_cap_val / 1e9) * 1.1 # 10% above
-            if min_cap < 0: min_cap = 0.0
-        else:
-            min_cap = min_cap_val / 1e9
-            max_cap = max_cap_val / 1e9
+        tab_titles = list(data_sheets.keys())
         
-        # Ensure min is still less than max after calculations
-        if min_cap >= max_cap:
-            min_cap = max_cap - 1.0
-            if min_cap < 0: min_cap = 0.0
+        # (Tab ordering - Unchanged)
+        if "Top 10 Undervalued (Graham)" in tab_titles:
+            tab_titles[tab_titles.index("Top 10 Undervalued (Graham)")] = "Top 10 Undervalued (Rel & Graham)"
+        elif "Top 10 Undervalued (Rel/Graham)" in tab_titles:
+            tab_titles[tab_titles.index("Top 10 Undervalued (Rel/Graham)")] = "Top 10 Undervalued (Rel & Graham)"
+        if "All Results" in tab_titles:
+            tab_titles.remove("All Results")
+            tab_titles.append("All Results")
 
-        cap_range = filt_col2.slider(
-            "Filter by Market Cap (Billions):",
-            min_value=min_cap,
-            max_value=max_cap,
-            value=(min_cap, max_cap),
-            format="%.1f B"
-        )
-    
-    # *** ROBUST FILTERING LOGIC ***
-    # Apply filters
-    filtered_df = df[
-        (df['Sector'].isin(selected_sectors))
-    ].copy()
+        # --- ⭐️ UPDATED: Callback Function ---
+        def set_ticker(ticker_symbol, anchor_id_to_scroll):
+            st.session_state.selected_ticker = ticker_symbol
+            st.session_state.scroll_to_detail = True # <-- ⭐️ SET SCROLL FLAG
+            st.session_state.active_anchor_id = anchor_id_to_scroll # <-- ⭐️ STORE THE UNIQUE ANCHOR
+        # --- END UPDATED ---
 
-    # Conditionally apply market cap filter
-    if not filtered_df.empty and 'marketCap' in filtered_df.columns and cap_range != (0.0, 0.0):
-         filtered_df = filtered_df[
-            (filtered_df['marketCap'].ge(cap_range[0] * 1e9)) &
-            (filtered_df['marketCap'].le(cap_range[1] * 1e9))
-         ]
-    
-    # 3. Sort by new dynamic score
-    filtered_df.sort_values(by='Final Quant Score', ascending=False, inplace=True)
-    
-    st.markdown(f"Displaying **{len(filtered_df)}** of **{len(df)}** total stocks matching filters.")
-    st.divider()
+        tabs = st.tabs(tab_titles)
 
-    # --- ⭐️ 6. UI: New Tab Structure ⭐️ ---
-    
-    tab_list = ["🏆 Quant Rankings", "🔬 Ticker Deep Dive", "📈 Portfolio Analytics"]
-    tab_rank, tab_deep, tab_port = st.tabs(tab_list)
-    
-    # --- Tab 1: Quant Rankings ---
-    with tab_rank:
-        st.header("🏆 Top Stocks by Final Quant Score")
-        st.info("Click a ticker to select it for the 'Ticker Deep Dive' tab.")
-        
-        # --- Column layout (List + Details) ---
-        rank_col1, rank_col2 = st.columns([1, 2])
-        
-        with rank_col1:
-            st.subheader(f"Ranked List ({len(filtered_df)})")
-            
-            with st.container(height=800):
-                for ticker in filtered_df.index:
-                    score = filtered_df.loc[ticker, 'Final Quant Score']
-                    label = f"{ticker} (Score: {score:.3f})"
-                    
-                    is_selected = (st.session_state.selected_ticker == ticker)
-                    button_type = "primary" if is_selected else "secondary"
-                    
-                    if st.button(label, key=f"rank_{ticker}", use_container_width=True, type=button_type):
-                        st.session_state.selected_ticker = ticker
-                        st.success(f"Selected {ticker}. See 'Ticker Deep Dive' tab.")
-        
-        with rank_col2:
-            st.subheader("Top 20 Overview")
-            
-            # Display columns for the table
-            display_cols = [
-                'Last Price', 'Sector', 'Market Cap', 
-                'Final Quant Score', 
-                'Z_Value', 'Z_Momentum', 'Z_Quality', 
-                'Z_Size', 'Z_LowVolatility', 'Z_Technical',
-                'Risk/Reward Ratio',
-                'Position Size (USD)' # Added new col
-            ]
-            # Ensure columns exist
-            display_cols = [c for c in display_cols if c in filtered_df.columns]
-            
-            # Re-format Market Cap for display
-            filtered_df_display = filtered_df.copy()
-            if 'marketCap' in filtered_df_display.columns:
-                filtered_df_display['Market Cap'] = filtered_df_display['marketCap'] / 1e9
-            
-            st.dataframe(
-                filtered_df_display.head(20)[display_cols],
-                column_config={
-                    "Last Price": st.column_config.NumberColumn(format="$%.2f"),
-                    "Market Cap": st.column_config.NumberColumn(format="%.1f B", help="Market Cap in Billions"),
-                    "Final Quant Score": st.column_config.NumberColumn(format="%.3f"),
-                    "Z_Value": st.column_config.NumberColumn(format="%.2f"),
-                    "Z_Momentum": st.column_config.NumberColumn(format="%.2f"),
-                    "Z_Quality": st.column_config.NumberColumn(format="%.2f"),
-                    "Z_Size": st.column_config.NumberColumn(format="%.2f"),
-                    "Z_LowVolatility": st.column_config.NumberColumn(format="%.2f"),
-                    "Z_Technical": st.column_config.NumberColumn(format="%.2f"),
-                    "Risk/Reward Ratio": st.column_config.NumberColumn(format="%.2f"),
-                    "Position Size (USD)": st.column_config.NumberColumn(format="$%,.0f"),
-                },
-                use_container_width=True,
-                height=700
-            )
-
-    # --- Tab 2: Ticker Deep Dive ---
-    with tab_deep:
-        st.header("🔬 Ticker Deep Dive")
-        
-        selected_ticker = st.session_state.selected_ticker
-        
-        if selected_ticker is None:
-            st.info("Go to the 'Quant Rankings' tab and click a ticker to see details.")
-        elif selected_ticker not in filtered_df.index:
-            st.warning(f"Ticker '{selected_ticker}' is not in the currently filtered list. Clear filters to see it.")
-        else:
-            ticker_data = filtered_df.loc[selected_ticker]
-            hist_data = all_histories.get(selected_ticker)
-            
-            st.subheader(f"Analysis for: {selected_ticker}")
-            
-            # *** ADD THIS WARNING DISPLAY ***
-            if pd.notna(ticker_data.get('data_warning')):
-                st.warning(f"⚠️ **Data Warning:** {ticker_data['data_warning']}")
-            # *** END OF NEW DISPLAY ***
-            
-            st.markdown(f"**Sector:** {ticker_data['Sector']} | **Data Source:** `{ticker_data['source']}`")
-            
-            # --- Key Metrics ---
-            kpi_cols = st.columns(4)
-            kpi_cols[0].metric("Final Quant Score", f"{ticker_data['Final Quant Score']:.3f}")
-            kpi_cols[1].metric("Last Price", f"${ticker_data['last_price']:.2f}")
-            kpi_cols[2].metric("Market Cap", f"${ticker_data['marketCap']/1e9:.1f} B")
-            kpi_cols[3].metric("Trend (50/200 MA)", ticker_data['Trend (50/200 Day MA)'])
-            
-            st.divider()
-            
-            # --- 6. Explainability & 7. UI Charts ---
-            chart_col1, chart_col2 = st.columns([2, 1])
-            
-            with chart_col1:
-                st.subheader("Price Chart & Technicals")
-                if hist_data is not None:
-                    price_chart = create_price_chart(hist_data, selected_ticker)
-                    st.plotly_chart(price_chart, use_container_width=True)
-                else:
-                    st.error("Historical data not found for this ticker.")
-                    
-            with chart_col2:
-                st.subheader("Factor Profile")
-                radar_chart = create_radar_chart(ticker_data, factor_z_cols)
-                st.plotly_chart(radar_chart, use_container_width=True)
+        for i, sheet_name in enumerate(tab_titles):
+            with tabs[i]:
+                # ⭐️ 1. Create a unique, HTML-safe anchor ID for this tab
+                safe_sheet_name = sheet_name.replace(' ', '-').replace('&', 'and').replace('/', '_')
+                anchor_id = f"detail-view-anchor-{safe_sheet_name}"
                 
-                with st.expander("Factor Contribution Breakdown", expanded=True):
-                    for factor in norm_weights.keys():
-                        z_col = f"Z_{factor}"
-                        w_z_col = f"Weighted_{z_col}"
-                        st.metric(
-                            label=f"{factor} (Z-Score: {ticker_data[z_col]:.2f})",
-                            value=f"Contrib: {ticker_data[w_z_col]:.3f}",
-                            help=f"Weight: {norm_weights[factor]*100:.1f}%"
-                        )
+                df_to_show = data_sheets[sheet_name]
 
-            st.divider()
-            
-            # --- Risk, Value & Position Sizing Metrics ---
-            st.subheader("Risk & Position Sizing")
-            risk_val_cols = st.columns(5) # Changed to 5 columns
-            
-            # 1. Stop Loss
-            sl_price = ticker_data['Stop Loss Price']
-            risk_pct = ticker_data['Risk % (to Stop)']
-            sl_display = f"${sl_price:.2f}" if pd.notna(sl_price) else "N/A"
-            risk_display = f"Risk %: {risk_pct:.1f}%" if pd.notna(risk_pct) else "N/A"
-            sl_method = ticker_data.get('SL_Method', 'N/A')
-            risk_val_cols[0].metric(f"Stop Loss ({sl_method})", sl_display, help=risk_display)
+                # --- ⭐️⭐️⭐️ NEW: Two-Column Master-Detail Layout ⭐️⭐️⭐️ ---
+                col1, col2 = st.columns([1, 2]) # 1/3 width for list, 2/3 for details
 
-            # 2. Take Profit (Fibonacci)
-            tp_price = ticker_data['Take Profit Price']
-            tp_display = f"${tp_price:.2f}" if pd.notna(tp_price) else "N/A"
-            risk_val_cols[1].metric("Take Profit (Fib 1.618)", tp_display)
+                # --- Column 1: Ticker List ---
+                with col1:
+                    st.subheader(f"Ticker List ({len(df_to_show)})")
+                    
+                    # --- ⭐️ MODIFICATION: Use st.container for scroll, div for style ---
+                    with st.container(height=600): # Use Streamlit's height
+                        st.markdown('<div class="ticker-list-container">', unsafe_allow_html=True) # Use div for styling
+                        for ticker in df_to_show.index:
+                            
+                            # Get score for the label
+                            score = df_to_show.loc[ticker, 'Final Quant Score']
+                            label = f"{ticker} (Score: {score:.3f})"
+                            
+                            # Set button type to 'primary' if selected
+                            is_selected = (st.session_state.selected_ticker == ticker)
+                            button_type = "primary" if is_selected else "secondary"
+                            
+                            st.button(
+                                label, 
+                                key=f"{sheet_name}_{ticker}", 
+                                on_click=set_ticker, 
+                                args=(ticker, anchor_id,),  # ⭐️ 2. Pass the unique anchor_id to the callback
+                                use_container_width=True,
+                                type=button_type
+                            )
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    # --- ⭐️ END MODIFICATION ---
+                    
+                    st.divider()
+                    csv = df_to_show.to_csv(index=True).encode('utf-8')
+                    st.download_button(
+                        label=f"📥 Download {sheet_name} (CSV)",
+                        data=csv,
+                        file_name=f"{sheet_name.replace(' ', '_')}.csv",
+                        mime='text/csv',
+                        key=f"csv_download_{sheet_name}",
+                        use_container_width=True
+                    )
 
-            # 3. Risk/Reward
-            rr_ratio = ticker_data['Risk/Reward Ratio']
-            rr_display = f"{rr_ratio:.2f}" if pd.notna(rr_ratio) else "N/A"
-            risk_val_cols[2].metric("Risk/Reward Ratio", rr_display)
+                # --- Column 2: Ticker Details ---
+                with col2:
+                    selected_ticker = st.session_state.selected_ticker
+                    
+                    # Show a message if no ticker is selected
+                    if selected_ticker is None:
+                        st.info("Click a ticker on the left to see its details.")
+                    
+                    # If a ticker is selected, show its data
+                    else:
+                        # Fetch the *full* data row from "All Results"
+                        all_data = data_sheets['All Results']
+                        
+                        # Check if the selected ticker is in the main list
+                        if selected_ticker in all_data.index:
+                            ticker_data = all_data.loc[selected_ticker]
+                            
+                            # --- ⭐️ Display Ticker Details ⭐️ ---
+                            
+                            # --- ⭐️ NEW: Add Anchor Point ---
+                            st.markdown(f'<a id="{anchor_id}"></a>', unsafe_allow_html=True) # ⭐️ 3. Use the unique anchor_id here
+                            
+                            # 1. Header
+                            st.header(f"Details for: {selected_ticker}")
+                            st.markdown(f"**Sector:** {ticker_data['Sector']}")
+                            st.divider()
+                            
+                            # 2. Key Metrics (Quant Score & Price)
+                            st.subheader("Key Metrics")
+                            kpi_cols = st.columns(3)
+                            kpi_cols[0].metric("Final Quant Score", f"{ticker_data['Final Quant Score']:.3f}")
+                            kpi_cols[1].metric("Last Price", f"${ticker_data['Last Price']:.2f}")
+                            kpi_cols[2].metric("Trend (50/200 MA)", f"{ticker_data['Trend (50/200 Day MA)']}")
 
-            # 4. Position Size (Shares)
-            pos_shares = ticker_data['Position Size (Shares)']
-            pos_display = f"{pos_shares:.0f} Shares" if pd.notna(pos_shares) else "N/A"
-            risk_usd = ticker_data.get('Risk Per Trade (USD)', 500)
-            risk_val_cols[3].metric("Position Size (Shares)", pos_display, help=f"Based on ${risk_usd:,.0f} risk")
-            
-            # 5. Position Size (USD)
-            pos_usd = ticker_data['Position Size (USD)']
-            pos_usd_display = f"${pos_usd:,.0f}" if pd.notna(pos_usd) else "N/A"
-            risk_val_cols[4].metric("Position Size (USD)", pos_usd_display, help="Shares * Last Price")
+                            # 3. Trading Levels (S/R, R/R)
+                            st.subheader("Trading Levels")
+                            lvl_cols = st.columns(3)
+                            # Handle potential NaN values before formatting
+                            support_val = f"${ticker_data['Cut Loss Level (Support)']:.2f}" if pd.notna(ticker_data['Cut Loss Level (Support)']) else "N/A"
+                            target_val = f"${ticker_data['Fib 161.8% Target']:.2f}" if pd.notna(ticker_data['Fib 161.8% Target']) else "N/A"
+                            rr_val = f"{ticker_data['Risk/Reward Ratio']:.2f}" if pd.notna(ticker_data['Risk/Reward Ratio']) else "N/A"
+                            
+                            lvl_cols[0].metric("Support (Stop Loss)", support_val)
+                            lvl_cols[1].metric("Take Profit (Fib 161.8%)", target_val)
+                            lvl_cols[2].metric("Risk/Reward Ratio", rr_val)
 
-            st.divider() # Add a divider before the next section
-            
-            # --- Graham Value Metric (moved to a new subheader) ---
-            st.subheader("Valuation")
-            val_col1, _, _ = st.columns(3) # Use columns to keep it compact
-            val_col1.metric("Valuation (Graham)", ticker_data['grahamValuation'])
-            
-            # --- Raw Data Expander ---
-            with st.expander("View All Raw Data for " + selected_ticker):
-                st.dataframe(ticker_data)
+                            # 4. Fundamental Analysis (in an expander)
+                            with st.expander("Fundamental Analysis", expanded=True):
+                                fund_cols = st.columns(3)
+                                fund_cols[0].metric("Graham Valuation", ticker_data['Valuation (Graham)'])
+                                fund_cols[1].metric("Relative P/E", ticker_data['Relative P/E'])
+                                fund_cols[2].metric("Relative P/B", ticker_data['Relative P/B'])
+                                
+                                st.divider()
+                                
+                                # Format values for display
+                                roe_val = f"{ticker_data['Return on Equity (ROE)']:.2f}%" if pd.notna(ticker_data['Return on Equity (ROE)']) else "N/A"
+                                de_val = f"{ticker_data['Debt/Equity']:.2f}" if pd.notna(ticker_data['Debt/Equity']) else "N/A"
+                                div_val = f"{ticker_data['Dividend Yield (%)']:.2f}%" if pd.notna(ticker_data['Dividend Yield (%)']) else "N/A"
 
-    # --- Tab 3: Portfolio Analytics ---
-    with tab_port:
-        st.header("📈 Portfolio-Level Analytics")
+                                fund_cols_2 = st.columns(3)
+                                fund_cols_2[0].metric("Return on Equity (ROE)", roe_val)
+                                fund_cols_2[1].metric("Debt/Equity (D/E)", de_val)
+                                fund_cols_2[2].metric("Dividend Yield", div_val)
+
+                            # 5. Recent News (in an expander)
+                            with st.expander("Signals & News"):
+                                st.metric("MACD Signal", ticker_data['MACD_Signal'])
+                                st.info(f"**Latest Headline:** {ticker_data['Latest Headline']}")
+                                st.metric("Recent News (48h)?", ticker_data['Recent News (48h)'])
+                                st.metric("Next Earnings Date", str(ticker_data['Next Earnings Date']))
+                                
+                        else:
+                            # This handles if a ticker from a previous run is selected
+                            st.warning(f"Ticker '{selected_ticker}' not found in the latest data.")
+                            st.session_state.selected_ticker = None # Reset
+                
+                # --- ⭐️⭐️⭐️ END NEW LAYOUT ⭐️⭐️⭐️ ---
+
+    # --- ⭐️ UPDATED: JavaScript injection for mobile scroll ---
+    if st.session_state.get('scroll_to_detail', False):
         
-        port_col1, port_col2 = st.columns(2)
+        # ⭐️ Get the *specific* anchor ID from session state
+        anchor_id_to_find = st.session_state.get('active_anchor_id', None)
         
-        with port_col1:
-            # --- 4. Statistical Robustness: Correlation Heatmap ---
-            st.subheader("Factor Correlation Heatmap")
-            st.info("This shows if factors are redundant (highly correlated). Aim for low values.")
-            
-            corr_matrix = filtered_df[factor_z_cols].corr()
-            corr_heatmap = px.imshow(
-                corr_matrix,
-                text_auto=".2f",
-                aspect="auto",
-                color_continuous_scale='RdBu_r', # Red-Blue
-                zmin=-1, zmax=1,
-                title="Factor Z-Score Correlation Matrix"
-            )
-            st.plotly_chart(corr_heatmap, use_container_width=True)
-            
-        with port_col2:
-            # --- 6. Explainability: Sector Heatmap ---
-            st.subheader("Sector Median Factor Strength")
-            st.info("This shows which factors are strongest/weakest for each sector.")
-            
-            sector_median_factors = filtered_df.groupby('Sector')[factor_z_cols].median()
-            sector_heatmap = px.imshow(
-                sector_median_factors,
-                text_auto=".2f",
-                aspect="auto",
-                color_continuous_scale='Viridis',
-                title="Median Factor Z-Score by Sector"
-            )
-            st.plotly_chart(sector_heatmap, use_container_width=True)
-            
-
-# --- ⭐️ 6. Scheduler Entry Point ---
-
-def run_analysis_for_scheduler():
-    """
-    Function to be called by an external scheduler (e.g., cron).
-    Does NOT use Streamlit.
-    """
-    print("--- [SPUS SCHEDULER] ---")
-    # *** USE SAUDI TIMEZONE ***
-    print(f"Starting scheduled analysis at {datetime.now(SAUDI_TZ)}...")
-    
-    # Setup basic print logging for the scheduler
-    def print_progress_callback(percent, text):
-        print(f"[{percent*100:.0f}%] {text}")
-    
-    CONFIG = load_config('config.json')
-    if CONFIG is None:
-        print("FATAL: Could not load config.json. Exiting.")
-        return
+        if anchor_id_to_find:
+            # This JS runs *after* the page re-renders
+            components.html(f"""
+            <script>
+                // We need to wait for Streamlit to finish rendering the columns
+                setTimeout(function() {{
+                    // Only scroll if on a small screen (Streamlit's mobile breakpoint is 768px)
+                    if (window.innerWidth < 768) {{
+                        
+                        // ⭐️ Find the anchor using the UNIQUE ID from Python
+                        var anchor = window.parent.document.getElementById('{anchor_id_to_find}');
+                        
+                        if (anchor) {{
+                            // Scroll the anchor into view
+                            anchor.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+                        }}
+                    }}
+                }}, 300); // 300ms delay
+            </script>
+            """, height=0)
         
-    # Setup file logging for the scheduled run
-    log_file_path = os.path.join(BASE_DIR, CONFIG.get('LOGGING', {}).get('LOG_FILE_PATH', 'spus_analysis.log'))
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler(log_file_path, mode='a'),
-            logging.StreamHandler(sys.stdout) # Log to stdout for cron
-        ]
-    )
-    
-    try:
-        df, _, _ = generate_quant_report(CONFIG, print_progress_callback)
-        if df is not None:
-            print(f"Successfully generated report for {len(df)} tickers.")
-        else:
-            print("Analysis failed to produce data.")
-            
-    except Exception as e:
-        logging.error(f"[SPUS SCHEDULER] Fatal error during scheduled run: {e}", exc_info=True)
-        print(f"Error: Analysis failed. Check log file for details: {log_file_path}")
+        # Reset the scroll flags so it doesn't run again on non-click reruns
+        st.session_state.scroll_to_detail = False
+        st.session_state.active_anchor_id = None # ⭐️ Reset the active anchor
+    # --- ⭐️ END UPDATED ---
 
-# --- ⭐️ 7. Main App Entry Point ---
 
 if __name__ == "__main__":
-    if "--run-scheduler" in sys.argv:
-        run_analysis_for_scheduler()
-    else:
-        main()
+    # The st.set_page_config() at the top of the file is the only one needed.
+    main()
