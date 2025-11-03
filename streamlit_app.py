@@ -17,6 +17,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.stats.mstats import winsorize
 import pytz # <-- IMPORT FOR TIMEZONE
+import pickle # <-- ⭐️ ADD THIS IMPORT
 
 # --- ⭐️ 1. Set Page Configuration FIRST ⭐️ ---
 st.set_page_config(
@@ -206,10 +207,12 @@ def calculate_all_z_scores(df, config):
     return df_analysis
 
 
+# --- ⭐️⭐️ FUNCTION REPLACED WITH CACHING LOGIC ⭐️⭐️ ---
 def generate_quant_report(CONFIG, progress_callback=None):
     """
     Core logic, decoupled from Streamlit.
     Fetches data, runs analysis, calculates Z-scores, and generates reports.
+    *** Includes persistent local caching via pickle. ***
     """
     
     def report_progress(percent, text):
@@ -234,38 +237,89 @@ def generate_quant_report(CONFIG, progress_callback=None):
         ticker_symbols = ticker_symbols[:limit]
         report_progress(0.07, f"(1/7) Analysis limited to {limit} tickers.")
     
-    # --- 2. Process Tickers Concurrently ---
+    # --- 2. Process Tickers Concurrently (with Caching) ---
     MAX_WORKERS = CONFIG.get('MAX_CONCURRENT_WORKERS', 10)
-    report_progress(0.1, f"(2/7) Fetching data for {len(ticker_symbols)} tickers (Max Workers: {MAX_WORKERS})...")
+    report_progress(0.1, f"(2/7) Checking cache for {len(ticker_symbols)} tickers...")
+
+    # --- ⭐️ CACHE LOGIC START ⭐️ ---
+    CACHE_DIR = os.path.join(BASE_DIR, "cache")
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    CACHE_TTL_SECONDS = 6 * 3600 # 6 hours
     
     results_list = []
     all_histories = {}
+    tickers_to_fetch = []
+    current_time = time.time()
+    
+    for ticker in ticker_symbols:
+        cache_path = os.path.join(CACHE_DIR, f"{ticker}.pkl")
+        
+        if os.path.exists(cache_path):
+            try:
+                cache_mod_time = os.path.getmtime(cache_path)
+                if (current_time - cache_mod_time) < CACHE_TTL_SECONDS:
+                    # Cache is valid, load it
+                    with open(cache_path, 'rb') as f:
+                        result = pickle.load(f)
+                    
+                    if result.get('success', False):
+                        if 'hist_df' in result:
+                            # Pop hist_df to all_histories, add the rest to results_list
+                            all_histories[ticker] = result.pop('hist_df')
+                        results_list.append(result)
+                        continue # Move to the next ticker
+            except Exception as e:
+                logging.warning(f"Failed to load cache for {ticker}, will re-fetch: {e}")
+                
+        # If cache is invalid or doesn't exist, add to fetch list
+        tickers_to_fetch.append(ticker)
+    
+    cached_count = len(results_list)
+    report_progress(0.15, f"(2/7) Loaded {cached_count} tickers from cache. Fetching {len(tickers_to_fetch)} new tickers...")
+    # --- ⭐️ CACHE LOGIC END ⭐️ ---
+    
     processed_count = 0
-    total_tickers = len(ticker_symbols)
+    total_to_fetch = len(tickers_to_fetch)
     start_time = time.time()
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_ticker = {executor.submit(process_ticker, ticker): ticker for ticker in ticker_symbols}
+        # Submit only the tickers that need fetching
+        future_to_ticker = {executor.submit(process_ticker, ticker): ticker for ticker in tickers_to_fetch}
         
         for future in as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
             try:
                 result = future.result(timeout=60) # 60s timeout per ticker
+                
+                # --- ⭐️ CACHE SAVE LOGIC START ⭐️ ---
                 if result.get('success', False):
-                    results_list.append(result)
+                    cache_path = os.path.join(CACHE_DIR, f"{ticker}.pkl")
+                    try:
+                        # Save the *entire* result (including hist_df) to pickle
+                        with open(cache_path, 'wb') as f:
+                            pickle.dump(result, f)
+                    except Exception as e:
+                        logging.warning(f"Failed to save cache for {ticker}: {e}")
+                    
+                    # Now pop hist_df and add to lists for this session
                     if 'hist_df' in result:
-                        all_histories[ticker] = result.pop('hist_df') # Store hist separately
+                        all_histories[ticker] = result.pop('hist_df') 
+                    results_list.append(result)
+                # --- ⭐️ CACHE SAVE LOGIC END ⭐️ ---
+                
                 else:
                     logging.error(f"Failed to process {ticker}: {result.get('error', 'Unknown error')}")
             except Exception as e:
                 logging.error(f"Error processing {ticker} in main loop: {e}", exc_info=True)
             
             processed_count += 1
-            percent_done = 0.1 + (0.6 * (processed_count / total_tickers))
-            report_progress(percent_done, f"(2/7) Processing: {ticker} ({processed_count}/{total_tickers})")
+            if total_to_fetch > 0:
+                percent_done = 0.15 + (0.55 * (processed_count / total_to_fetch)) # Adjusted progress bar math
+                report_progress(percent_done, f"(2/7) Processing: {ticker} ({processed_count}/{total_to_fetch})")
 
     end_time = time.time()
     report_progress(0.7, f"(3/7) Data fetch complete. Time taken: {end_time - start_time:.2f}s")
+    # --- ⭐️⭐️ END OF REPLACED FUNCTION ⭐️⭐️ ---
 
     if not results_list:
         report_progress(1.0, "Error: No data successfully processed. Analysis cancelled.")
@@ -275,7 +329,6 @@ def generate_quant_report(CONFIG, progress_callback=None):
     results_df.set_index('ticker', inplace=True)
     
     # --- 3. Risk Management Calcs ---
-    # *** THIS SECTION IS NOW REMOVED, AS IT'S DONE IN SPUS.PY ***
     report_progress(0.75, "(4/7) Risk metrics calculated in spus.py.")
     
     # --- 4. Factor Z-Score Calculation ---
@@ -285,8 +338,6 @@ def generate_quant_report(CONFIG, progress_callback=None):
     # --- 5. Save Reports (Excel, PDF, CSV) ---
     report_progress(0.9, "(6/7) Generating reports...")
     
-    # Note: Final Quant Score is NOT calculated here. It's done dynamically in the UI.
-    # We sort by a default factor (e.g., Value) for the static reports.
     results_df.sort_values(by='Z_Value', ascending=False, inplace=True)
 
     # Column name mapping for display
@@ -669,14 +720,23 @@ def main():
             "Size": 0.10, "LowVolatility": 0.15, "Technical": 0.15
         })
         
-        # *** ADDED RESET BUTTON ***
-        if st.button("Reset Factor Weights"):
+        # --- ⭐️⭐️ CODE MODIFIED START ⭐️⭐️ ---
+        # Define the callback function first
+        def callback_reset_weights():
+            """
+            This function is called when the reset button is clicked.
+            It deletes all factor weight keys from session state.
+            """
             for factor in default_weights.keys():
-                # This slider key format must match the key in st.slider below
                 key_to_del = f"weight_{factor}" 
                 if key_to_del in st.session_state:
                     del st.session_state[key_to_del]
-            st.rerun()
+
+        # Use the on_click callback in the button
+        st.button("Reset Factor Weights", on_click=callback_reset_weights)
+        
+        # REMOVED the old `if st.button(...)` logic
+        # --- ⭐️⭐️ CODE MODIFIED END ⭐️⭐️ ---
 
         # --- 7. UI: Factor Weight Sliders ---
         st.subheader("Factor Weights")
