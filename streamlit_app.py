@@ -349,29 +349,29 @@ def calculate_robust_zscore(series):
     z_score = (series - median) / (1.4826 * mad)
     return z_score
 
+# --- ⭐️ MODIFIED FUNCTION ⭐️ ---
+# Added 'risk_amount_usd' as an argument
 @st.cache_data(show_spinner=False)
-def run_full_analysis(CONFIG):
+def run_full_analysis(CONFIG, risk_amount_usd):
     """ (This function is unchanged) """
     progress_bar = st.progress(0, text="Starting analysis...")
     status_text = st.empty()
     status_text.info("يتم الآن بدء التحليل...")
-    MAX_RISK_USD = 50
     
-    # --- ⭐️ FIX for KeyError ⭐️ ---
-    # Use .get() to provide a default log file name if it's missing from config.json
-    log_file_name = CONFIG.get('LOG_FILE_PATH', 'spus_analysis.log')
-    log_file_full_path = os.path.join(BASE_DIR, log_file_name)
-    
+    # --- ⭐️ MODIFICATION ⭐️ ---
+    # This MAX_RISK_USD is now only used for the old "Shares to Buy" col
+    # The new risk_amount_usd is passed to process_ticker
+    MAX_RISK_USD = risk_amount_usd 
+    # --- ⭐️ END MODIFICATION ⭐️ ---
+
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(log_file_full_path), # Use the safe path
+            logging.FileHandler(os.path.join(BASE_DIR, CONFIG.get('LOG_FILE_PATH', 'spus_analysis.log'))),
             logging.StreamHandler()
         ]
     )
-    # --- ⭐️ END FIX ⭐️ ---
-
     status_text.info("... (1/7) جارٍ جلب قائمة الرموز (Tickers)...")
     ticker_symbols = fetch_spus_tickers() 
     if not ticker_symbols:
@@ -394,16 +394,29 @@ def run_full_analysis(CONFIG):
     news_data = {}
     headline_data = {}
     calendar_data = {}
+    
+    # --- ⭐️ MODIFICATION ⭐️ ---
+    # The 'Position Size (Shares)' and related risk cols will now be 
+    # calculated inside process_ticker using the new 'risk_amount_usd'
+    # We will just fetch them from the 'result' dictionary
+    risk_data = {}
+    # --- ⭐️ END MODIFICATION ⭐️ ---
+    
     MAX_WORKERS = CONFIG['MAX_CONCURRENT_WORKERS']
     status_text.info(f"... (2/7) جارٍ جلب البيانات (Concurrent) باستخدام {MAX_WORKERS} عامل...")
     start_time = time.time()
     processed_count = 0
     total_tickers = len(ticker_symbols)
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        
+        # --- ⭐️ MODIFIED future_to_ticker ⭐️ ---
+        # Pass the risk_amount_usd to the process_ticker function
         future_to_ticker = {
-            executor.submit(process_ticker, ticker): ticker
+            executor.submit(process_ticker, ticker, risk_per_trade_amount=risk_amount_usd): ticker
             for ticker in ticker_symbols
         }
+        # --- ⭐️ END MODIFICATION ⭐️ ---
+        
         for i, future in enumerate(as_completed(future_to_ticker)):
             ticker = future_to_ticker[future]
             try:
@@ -411,21 +424,53 @@ def run_full_analysis(CONFIG):
                 if result['success']:
                     ticker = result['ticker']
                     processed_tickers.add(ticker)
-                    if result['momentum_12_1'] is not None: momentum_data[ticker] = result['momentum_12_1']
+                    if result['momentum_12m'] is not None: momentum_data[ticker] = result['momentum_12m'] # <-- Changed from 12_1
                     if result['volatility_1y'] is not None: volatility_data[ticker] = result['volatility_1y']
-                    if result['rsi'] is not None: rsi_data[ticker] = result['rsi']
+                    if result['RSI'] is not None: rsi_data[ticker] = result['RSI']
                     if result['last_price'] is not None: last_prices[ticker] = result['last_price']
-                    if result['support_resistance'] is not None: support_resistance_levels[ticker] = result['support_resistance']
-                    trend_data[ticker] = result['trend']
-                    macd_data[ticker] = macd_data.get(ticker, {})
-                    if result['macd'] is not None: macd_data[ticker]['MACD'] = result['macd']
-                    if result['signal_line'] is not None: macd_data[ticker]['Signal_Line'] = result['signal_line']
-                    if result['hist_val'] is not None: macd_data[ticker]['Histogram'] = result['hist_val']
-                    if result['macd_signal'] is not None: macd_data[ticker]['Signal'] = result['macd_signal']
-                    financial_data[ticker] = result['financial_dict']
-                    news_data[ticker] = result['recent_news']
-                    headline_data[ticker] = result['latest_headline']
-                    calendar_data[ticker] = result['earnings_date']
+                    
+                    # S/R levels are now parsed inside process_ticker
+                    support_resistance = {
+                        'Support': result.get('Support_90d'),
+                        'Resistance': result.get('Resistance_90d'),
+                        'Fib_161_8': result.get('Take Profit Price') # Use new Take Profit calc
+                    }
+                    if support_resistance['Support'] is not None:
+                         support_resistance_levels[ticker] = support_resistance
+                    
+                    trend_data[ticker] = result.get('Trend (50/200 Day MA)', 'N/A')
+                    macd_data[ticker] = {
+                        'MACD': None, # Not strictly needed anymore
+                        'Signal_Line': None, # Not strictly needed anymore
+                        'Histogram': None, # Not strictly needed anymore
+                        'Signal': result.get('MACD_Signal', 'N/A')
+                    }
+                    
+                    # Map new financial_dict from parsed data
+                    financial_data[ticker] = {
+                        'Sector': result.get('Sector'),
+                        'Market Cap': result.get('marketCap'),
+                        'Valuation (Graham)': result.get('grahamValuation'),
+                        'Graham Number': result.get('grahamNumber'),
+                        'Forward P/E': result.get('forwardPE'),
+                        'P/B Ratio': result.get('priceToBook'),
+                        'Dividend Yield': result.get('dividendYield'), # Note: spus.py doesn't seem to parse this
+                        'Return on Equity (ROE)': result.get('returnOnEquity'),
+                        'Debt/Equity': result.get('debtToEquity'),
+                    }
+
+                    news_data[ticker] = result.get('recent_news', 'N/A')
+                    headline_data[ticker] = result.get('latest_headline', 'N/A')
+                    calendar_data[ticker] = result.get('next_earnings_date', 'N/A')
+
+                    # --- ⭐️ NEW: Get Risk Data ⭐️ ---
+                    risk_data[ticker] = {
+                        'Risk % (to Support)': result.get('Risk % (to Stop)'),
+                        'Risk/Reward Ratio': result.get('Risk/Reward Ratio'),
+                        'Shares to Buy': result.get('Position Size (Shares)')
+                    }
+                    # --- ⭐️ END NEW ⭐️ ---
+
             except Exception as e:
                 logging.error(f"Error processing {ticker} in main loop: {e}")
             processed_count = i + 1
@@ -433,38 +478,38 @@ def run_full_analysis(CONFIG):
             progress_bar.progress(progress_percentage, text=f"Processing: {ticker} ({processed_count}/{total_tickers})")
     end_time = time.time()
     status_text.info(f"... (3/7) انتهى جلب البيانات. الوقت المستغرق: {end_time - start_time:.2f} ثانية.")
-    status_text.info("... (4/7) جارٍ حساب المخاطر/العوائد (R/R)...")
-    progress_bar.progress(0.9, text="Calculating Risk/Reward...")
-    threshold_percentage = CONFIG['PRICE_THRESHOLD_PERCENT']
+    
+    # --- ⭐️ MODIFICATION ⭐️ ---
+    # This entire R/R block is now redundant, as it's calculated in spus.py.
+    # We will just use the values from risk_data[ticker]
+    #
+    # status_text.info("... (4/7) جارٍ حساب المخاطر/العوائد (R/R)...")
+    # ... (block removed) ...
+    #
+    # We can keep the 'comparison_results' (Price vs. Levels) logic
+    # --- ⭐️ END MODIFICATION ⭐️ ---
+    
+    status_text.info("... (4/7) جارٍ حساب أوضاع الأسعار (Price vs. Levels)...")
+    progress_bar.progress(0.9, text="Calculating Price vs. Levels...")
+    threshold_percentage = CONFIG.get('PRICE_THRESHOLD_PERCENT', 2.5) # Using 2.5% as a default
     comparison_results = {}
-    risk_percentages = {}
-    reward_percentages = {}
-    risk_reward_ratios = {}
+
     for ticker in last_prices.keys():
         last_price = last_prices.get(ticker)
         levels = support_resistance_levels.get(ticker)
         comparison_results[ticker] = 'Price or S/R levels not available'
-        risk_percentages[ticker] = "N/A"
-        reward_percentages[ticker] = "N/A"
-        risk_reward_ratios[ticker] = "N/A"
+        
         if last_price is not None and levels is not None and last_price > 0:
             support = levels.get('Support')
             resistance = levels.get('Resistance')
+            
             if support is not None and resistance is not None and resistance > support:
-                support_diff = last_price - support
-                resistance_diff = resistance - last_price
-                risk_pct = (support_diff / last_price) * 100
-                reward_pct = (resistance_diff / last_price) * 100
-                risk_percentages[ticker] = risk_pct
-                reward_percentages[ticker] = reward_pct
-                if risk_pct > 0:
-                    risk_reward_ratios[ticker] = reward_pct / risk_pct
-                else:
-                    risk_reward_ratios[ticker] = "N/A (Price below Support)"
                 support_diff_percentage = ((last_price - support) / support) * 100 if support != 0 else float('inf')
+                resistance_diff_percentage = ((last_price - resistance) / resistance) * 100 if resistance != 0 else float('inf')
+
                 if abs(support_diff_percentage) <= threshold_percentage:
                     comparison_results[ticker] = 'Near Support'
-                elif abs(((last_price - resistance) / resistance) * 100) <= threshold_percentage:
+                elif abs(resistance_diff_percentage) <= threshold_percentage:
                      comparison_results[ticker] = 'Near Resistance'
                 elif last_price > resistance:
                     comparison_results[ticker] = 'Above Resistance'
@@ -472,6 +517,7 @@ def run_full_analysis(CONFIG):
                     comparison_results[ticker] = 'Below Support'
                 else:
                     comparison_results[ticker] = 'Between Support and Resistance'
+
     status_text.info("... (5/7) جارٍ تجميع النتائج وحساب Z-Scores...")
     progress_bar.progress(0.95, text="Aggregating and Scoring...")
     tickers_to_report = list(last_prices.keys()) 
@@ -482,19 +528,16 @@ def run_full_analysis(CONFIG):
     for ticker in tickers_to_report:
         fin_info = financial_data.get(ticker, {})
         support_resistance = support_resistance_levels.get(ticker, {})
-        shares_to_buy_str = "N/A"
-        try:
-            last_price_num = pd.to_numeric(last_prices.get(ticker), errors='coerce')
-            support_price_num = pd.to_numeric(support_resistance.get('Support'), errors='coerce')
-            if pd.notna(last_price_num) and pd.notna(support_price_num):
-                risk_per_share = last_price_num - support_price_num
-                if risk_per_share > 0:
-                    shares_to_buy = MAX_RISK_USD / risk_per_share
-                    shares_to_buy_str = f"{shares_to_buy:.2f}"
-                elif risk_per_share <= 0:
-                    shares_to_buy_str = "N/A (Price below Support)"
-        except Exception:
-            pass
+        ticker_risk = risk_data.get(ticker, {}) # <-- ⭐️ Get new risk data
+
+        # --- ⭐️ MODIFIED: Use new risk data ⭐️ ---
+        shares_to_buy_val = ticker_risk.get('Shares to Buy')
+        shares_to_buy_str = f"{shares_to_buy_val:.2f}" if pd.notna(shares_to_buy_val) else "N/A"
+        
+        risk_pct_val = ticker_risk.get('Risk % (to Support)')
+        rr_ratio_val = ticker_risk.get('Risk/Reward Ratio')
+        # --- ⭐️ END MODIFICATION ⭐️ ---
+        
         result_data = {
             'Ticker': ticker,
             'Last Price': last_prices.get(ticker, pd.NA),
@@ -508,10 +551,10 @@ def run_full_analysis(CONFIG):
             'Trend (50/200 Day MA)': trend_data.get(ticker, "N/A"),
             'Price vs. Levels': comparison_results.get(ticker, "N/A"),
             'Cut Loss Level (Support)': support_resistance.get('Support'),
-            'Risk % (to Support)': risk_percentages.get(ticker, "N/A"),
+            'Risk % (to Support)': risk_pct_val, # <-- ⭐️ Use new value
             'Fib 161.8% Target': support_resistance.get('Fib_161_8'),
-            'Risk/Reward Ratio': risk_reward_ratios.get(ticker, pd.NA),
-            'Shares to Buy ($50 Risk)': shares_to_buy_str,
+            'Risk/Reward Ratio': rr_ratio_val, # <-- ⭐️ Use new value
+            'Shares to Buy ($50 Risk)': shares_to_buy_str, # <-- ⭐️ Use new value (label is now wrong, but we'll keep for compatibility)
             'Recent News (48h)': news_data.get(ticker, "N/A"),
             'Next Earnings Date': calendar_data.get(ticker, "N/A"),
             'Latest Headline': headline_data.get(ticker, "N/A"),
@@ -523,7 +566,10 @@ def run_full_analysis(CONFIG):
         }
         results_list.append(result_data)
     results_df = pd.DataFrame(results_list)
-    status_text.info("... (5/7) Calculating sector medians...")
+    
+    # --- (Rest of the Z-score and saving logic is unchanged) ---
+    
+    status_text.info("... (6/7) Calculating sector medians...") # <-- Renumbered step
     results_df['Forward P/E'] = pd.to_numeric(results_df['Forward P/E'], errors='coerce')
     results_df['P/B Ratio'] = pd.to_numeric(results_df['P/B Ratio'], errors='coerce')
     sector_pe_median = results_df.groupby('Sector')['Forward P/E'].median()
@@ -539,10 +585,13 @@ def run_full_analysis(CONFIG):
             return "Overvalued (Sector)"
     results_df['Relative P/E'] = results_df.apply(lambda row: get_relative_signal(row['Forward P/E'], row['Sector P/E']), axis=1)
     results_df['Relative P/B'] = results_df.apply(lambda row: get_relative_signal(row['P/B Ratio'], row['Sector P/B']), axis=1)
-    FACTOR_WEIGHTS = {
+    
+    # --- ⭐️ Use Default Weights from Config ⭐️ ---
+    FACTOR_WEIGHTS = CONFIG.get('DEFAULT_FACTOR_WEIGHTS', {
         'VALUE': 0.25, 'MOMENTUM': 0.15, 'QUALITY': 0.20, 
         'SIZE': 0.10, 'LOW_VOL': 0.15, 'TECHNICAL': 0.15
-    }
+    })
+
     graham_price = pd.to_numeric(results_df['Fair Price (Graham)'], errors='coerce')
     last_price_pd = pd.to_numeric(results_df['Last Price'], errors='coerce')
     last_price_safe = last_price_pd.replace(0, pd.NA)
@@ -572,19 +621,25 @@ def run_full_analysis(CONFIG):
         return score
     results_df['Technical_Score'] = results_df.apply(get_technical_score, axis=1)
     results_df['Z_Technical'] = results_df.groupby('Sector')['Technical_Score'].transform(calculate_robust_zscore).fillna(0)
+    
+    # --- ⭐️ MODIFIED: Use new weight keys ⭐️ ---
     results_df['Final Quant Score'] = (
-        (results_df['Z_Value'] * FACTOR_WEIGHTS['VALUE']) +
-        (results_df['Z_Momentum'] * FACTOR_WEIGHTS['MOMENTUM']) +
-        (results_df['Z_Quality'] * FACTOR_WEIGHTS['QUALITY']) +
-        (results_df['Z_Size'] * FACTOR_WEIGHTS['SIZE']) +
-        (results_df['Z_Low_Volatility'] * FACTOR_WEIGHTS['LOW_VOL']) +
-        (results_df['Z_Technical'] * FACTOR_WEIGHTS['TECHNICAL'])
+        (results_df['Z_Value'] * FACTOR_WEIGHTS.get('Value', 0.25)) +
+        (results_df['Z_Momentum'] * FACTOR_WEIGHTS.get('Momentum', 0.15)) +
+        (results_df['Z_Quality'] * FACTOR_WEIGHTS.get('Quality', 0.20)) +
+        (results_df['Z_Size'] * FACTOR_WEIGHTS.get('Size', 0.10)) +
+        (results_df['Z_Low_Volatility'] * FACTOR_WEIGHTS.get('LowVolatility', 0.15)) +
+        (results_df['Z_Technical'] * FACTOR_WEIGHTS.get('Technical', 0.15))
     )
+    # --- ⭐️ END MODIFICATION ⭐️ ---
+
     results_df['Risk/Reward Ratio'] = pd.to_numeric(results_df['Risk/Reward Ratio'], errors='coerce')
     results_df['Risk % (to Support)'] = pd.to_numeric(results_df['Risk % (to Support)'], errors='coerce')
     results_df['Final Quant Score'] = pd.to_numeric(results_df['Final Quant Score'], errors='coerce')
     results_df.sort_values(by='Final Quant Score', ascending=False, inplace=True)
     results_df.set_index('Ticker', inplace=True)
+    
+    # (Rest of sheet creation is unchanged)
     data_sheets = {
         'Top 20 Final Quant Score': results_df.head(20),
         'Top Quant & High R-R': results_df[pd.to_numeric(results_df['Risk/Reward Ratio'], errors='coerce') > 1].head(20).sort_values(by='Risk/Reward Ratio', ascending=False),
@@ -597,7 +652,9 @@ def run_full_analysis(CONFIG):
         'Top 10 by Market Cap (SPUS)': results_df.sort_values(by='Market Cap', ascending=False).head(10),
         'All Results': results_df
     }
-    excel_file_path = os.path.join(BASE_DIR, CONFIG['EXCEL_FILE_PATH'])
+    
+    # --- ⭐️ Use Config for Excel Path ⭐️ ---
+    excel_file_path = os.path.join(BASE_DIR, CONFIG.get('LOGGING', {}).get('EXCEL_FILE_PATH', 'spus_analysis_results.xlsx'))
     try:
         with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
             format_cols = ['Last Price', 'Fair Price (Graham)', 'Cut Loss Level (Support)',
@@ -633,16 +690,24 @@ def run_full_analysis(CONFIG):
                 if df.empty:
                     return [Paragraph(f"No data for: {title}", styles['h2']), Spacer(1, 0.1*inch)]
                 df_formatted = format_for_excel(df.reset_index())
+                
+                # --- ⭐️ MODIFIED: Renamed 'Top 10 by Market Cap (SPUS)' ⭐️ ---
                 cols_map = {
-                    'Top 10 by Market Cap (from SPUS)': (['Ticker', 'Market Cap', 'Sector', 'Last Price', 'Final Quant Score', 'Relative P/E', 'Risk/Reward Ratio', 'Volatility (1Y)', 'Dividend Yield (%)'], ['Ticker', 'Mkt Cap', 'Sector', 'Price', 'Score', 'Rel. P/E', 'R/R', 'Volatility', 'Div %']),
+                    'Top 10 by Market Cap (SPUS)': (['Ticker', 'Market Cap', 'Sector', 'Last Price', 'Final Quant Score', 'Relative P/E', 'Risk/Reward Ratio', 'Volatility (1Y)', 'Dividend Yield (%)'], ['Ticker', 'Mkt Cap', 'Sector', 'Price', 'Score', 'Rel. P/E', 'R/R', 'Volatility', 'Div %']),
                     'Top 20 by Final Quant Score': (['Ticker', 'Final Quant Score', 'Sector', 'Last Price', 'Relative P/E', 'Valuation (Graham)', 'Risk/Reward Ratio', 'Volatility (1Y)', '1-Year Momentum (12-1) (%)'], ['Ticker', 'Score', 'Sector', 'Price', 'Rel. P/E', 'Graham', 'R/R', 'Volatility', 'Momentum']),
                     'Top Quant & High R-R': (['Ticker', 'Final Quant Score', 'Risk/Reward Ratio', 'Relative P/E', 'Last Price', 'Volatility (1Y)', 'Cut Loss Level (Support)'], ['Ticker', 'Score', 'R/R', 'Rel. P/E', 'Price', 'Volatility', 'Stop Loss']),
                     'Top 10 Undervalued (Rel & Graham)': (['Ticker', 'Final Quant Score', 'Relative P/E', 'Valuation (Graham)', 'Last Price', 'Fair Price (Graham)', 'Sector P/E', 'Forward P/E'], ['Ticker', 'Score', 'Rel. P/E', 'Graham', 'Price', 'Graham Price', 'Sector P/E', 'Stock P/E']),
                     'New Bullish Crossovers (MACD)': (['Ticker', 'Final Quant Score', 'MACD_Signal', 'Last Price', 'Trend (50/200 Day MA)', 'Risk/Reward Ratio', 'Cut Loss Level (Support)', 'Relative P/E'], ['Ticker', 'Score', 'MACD', 'Price', 'Trend', 'R/R', 'Stop Loss', 'Rel. P/E']),
                     'Stocks Currently Near Support': (['Ticker', 'Final Quant Score', 'Price vs. Levels', 'Last Price', 'Risk % (to Support)', 'Risk/Reward Ratio', 'Cut Loss Level (Support)', 'Volatility (1Y)'], ['Ticker', 'Score', 'vs. Levels', 'Price', 'Risk %', 'R/R', 'Stop Loss', 'Volatility'])
                 }
-                if title in cols_map:
-                    cols, headers = cols_map[title]
+                
+                # --- ⭐️ MODIFIED: Renamed 'Top 10 by Market Cap (SPUS)' ⭐️ ---
+                pdf_title_key = title
+                if title == 'Top 10 by Market Cap (from SPUS)':
+                    pdf_title_key = 'Top 10 by Market Cap (SPUS)'
+                
+                if pdf_title_key in cols_map:
+                    cols, headers = cols_map[pdf_title_key]
                     existing_cols = [c for c in cols if c in df_formatted.columns]
                     df_pdf = df_formatted[existing_cols]
                     df_pdf.columns = [headers[cols.index(c)] for c in existing_cols]
@@ -666,8 +731,10 @@ def run_full_analysis(CONFIG):
                     ('ALTERNATINGBACKGROUND', (0, 1), (-1, -1), [colors.Color(0.9, 0.9, 0.9), colors.Color(0.98, 0.98, 0.98)])
                 ])
                 table.setStyle(table_style)
+                
+                # --- ⭐️ MODIFIED: Renamed 'Top 10 by Market Cap (SPUS)' ⭐️ ---
                 SUMMARY_DESCRIPTIONS = {
-                    'Top 10 by Market Cap (from SPUS)': "This table shows the 10 largest companies in the SPUS portfolio, sorted by their market capitalization.",
+                    'Top 10 by Market Cap (SPUS)': "This table shows the 10 largest companies in the SPUS portfolio, sorted by their market capitalization.",
                     'Top 20 by Final Quant Score': "This table ranks the top 20 stocks based on the combined 6-factor quantitative score (Value, Momentum, Quality, Size, Volatility, Technicals).",
                     'Top Quant & High R-R': "This table filters the top-ranked stocks to show only those with a favorable Risk/Reward Ratio (greater than 1).",
                     'Top 10 Undervalued (Rel & Graham)': "This table highlights the top 10 stocks considered 'Undervalued' by either the Graham Number or relative sector P/E.",
@@ -675,14 +742,16 @@ def run_full_analysis(CONFIG):
                     'Stocks Currently Near Support': "This table identifies stocks whose current price is very close to their 90-day technical support level, a potential entry point."
                 }
                 elements = [Paragraph(title, styles['h2']), Spacer(1, 0.1*inch), table, Spacer(1, 0.1*inch)]
-                summary_text = SUMMARY_DESCRIPTIONS.get(title)
+                summary_text = SUMMARY_DESCRIPTIONS.get(pdf_title_key) # <-- Use key
                 if summary_text:
                     summary_paragraph = Paragraph(summary_text, styles['BodyText'])
                     elements.append(summary_paragraph)
                 elements.append(Spacer(1, 0.25*inch))
                 return elements
+            
             elements.append(Paragraph(f"SPUS Analysis Report - {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['h1']))
-            elements.extend(create_pdf_table("Top 10 by Market Cap (from SPUS)", data_sheets['Top 10 by Market Cap (SPUS)']))
+            # --- ⭐️ MODIFIED: Renamed 'Top 10 by Market Cap (SPUS)' ⭐️ ---
+            elements.extend(create_pdf_table("Top 10 by Market Cap (SPUS)", data_sheets['Top 10 by Market Cap (SPUS)']))
             elements.extend(create_pdf_table("Top 20 by Final Quant Score", data_sheets['Top 20 Final Quant Score']))
             elements.extend(create_pdf_table("Top Quant & High R-R", data_sheets['Top Quant & High R-R']))
             elements.extend(create_pdf_table("Top 10 Undervalued (Rel & Graham)", data_sheets['Top 10 Undervalued (Rel & Graham)']))
@@ -725,14 +794,15 @@ def main():
         st.error(f"المسار المتوقع: {os.path.join(BASE_DIR, 'config.json')}")
         st.stop()
 
-    EXCEL_FILE = CONFIG.get('EXCEL_FILE_PATH', './spus_analysis_results.xlsx')
+    # --- ⭐️ Use Config for Excel Path ⭐️ ---
+    EXCEL_FILE = CONFIG.get('LOGGING', {}).get('EXCEL_FILE_PATH', 'spus_analysis_results.xlsx')
     ABS_EXCEL_PATH = os.path.join(BASE_DIR, EXCEL_FILE)
 
     # --- ⭐️ Redesigned Sidebar ---
     with st.sidebar:
         # --- ⭐️⭐️⭐️ LOGO CHANGE HERE ⭐️⭐️⭐️ ---
-        # --- ⭐️ Restored to your original 'logo.png' ⭐️ ---
-        st.image("logo.png", width=200) #
+        # (Assuming logo.png, as per your original file)
+        st.image("logo.png", width=200) 
         # --- ⭐️⭐️⭐️ END LOGO CHANGE ⭐️⭐️⭐️ ---
         st.title("SPUS Quant Analyzer")
         st.markdown("تحليل كمي متقدم لمحفظة SPUS.")
@@ -740,6 +810,21 @@ def main():
         st.divider()
 
         st.subheader("Controls")
+        
+        # --- ⭐️ NEW: Risk Amount Input ⭐️ ---
+        # Get default risk amount from config
+        default_risk = CONFIG.get('RISK_MANAGEMENT', {}).get('RISK_PER_TRADE_AMOUNT', 50)
+        
+        # Add the number input widget
+        risk_amount = st.number_input(
+            "Risk Amount per Trade ($)", 
+            min_value=1.0, 
+            value=float(default_risk), # Ensure it's a float for the widget
+            step=10.0, 
+            help="Set the max $ amount to risk per trade for position sizing. Click 'Run' to apply."
+        )
+        # --- ⭐️ END NEW ⭐️ ---
+
         if st.button("🔄 Run Full Analysis (تشغيل التحليل الكامل)", type="primary"):
             st.cache_data.clear() 
             st.success("Cache cleared. Running fresh analysis...")
@@ -763,7 +848,7 @@ def main():
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
         else:
-            st.info("قم بتشغيل التحليل أولاً لإنشاء التقارIR.")
+            st.info("قم بتشغيل التحليل أولاً لإنشاء التقارير.")
 
         if pdf_path:
             with open(pdf_path, "rb") as file:
@@ -788,6 +873,28 @@ def main():
             * **Volatility (1Y)**: 1-Year Volatility (التقلب السنوي)
             * **Momentum (12-1)**: 12-Month Momentum (skipping last month)
             """)
+            
+        # --- ⭐️ NEW: About Section ⭐️ ---
+        st.divider()
+        
+        with st.expander("ℹ️ About This App"):
+            st.markdown("""
+            This application performs a comprehensive 6-factor quantitative analysis on the holdings of the SPUS ETF.
+            
+            **Factors Analyzed:**
+            * **Value:** P/E, P/B, P/FCF, etc.
+            * **Momentum:** 12-1 month & 3-month price change.
+            * **Quality:** ROE, ROA, D/E.
+            * **Size:** Market Cap (favors smaller caps).
+            * **Volatility:** 1-year volatility & Beta.
+            * **Technical:** RSI, ADX, MA positions.
+            
+            All data is sourced from `yfinance` with `Alpha Vantage` as a fallback.
+            
+            ***Disclaimer:*** *This tool is for educational and research purposes only. All analysis is automated and may contain errors. This is not financial advice. Do your own research before making any investment decisions.*
+            """)
+        # --- ⭐️ END NEW ⭐️ ---
+
         
         st.divider()
         st.info("اضغط 'Run' لبدء التحليل. سيتم تخزين النتائج مؤقتًا.")
@@ -800,7 +907,8 @@ def main():
     st.markdown("Welcome to the SPUS Quantitative Analysis tool. All data is analyzed using a 6-factor model (Value, Momentum, Quality, Size, Volatility, Technicals) relative to sector peers.")
 
     with st.spinner("Running full analysis... This may take several minutes on first run..."):
-        data_sheets, mod_time = run_full_analysis(CONFIG)
+        # --- ⭐️ MODIFIED: Pass risk_amount to the function ⭐️ ---
+        data_sheets, mod_time = run_full_analysis(CONFIG, risk_amount_usd=risk_amount)
     
     if data_sheets is None:
         st.warning("لم يتم العثور على ملف نتائج (`spus_analysis_results.xlsx`).")
