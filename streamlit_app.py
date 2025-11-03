@@ -723,7 +723,7 @@ def main():
     # --- ⭐️ Redesigned Sidebar ---
     with st.sidebar:
         # --- ⭐️⭐️⭐️ LOGO CHANGE HERE ⭐️⭐️⭐️ ---
-        st.image("logo.jpg", width=200) # <-- ⭐️ CHANGED to your local logo file
+        st.image("logo.png", width=200) # <-- ⭐️ CHANGED to your local logo file
         # --- ⭐️⭐️⭐️ END LOGO CHANGE ⭐️⭐️⭐️ ---
         st.title("SPUS Quant Analyzer")
         st.markdown("تحليل كمي متقدم لمحفظة SPUS.")
