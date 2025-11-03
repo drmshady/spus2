@@ -638,6 +638,16 @@ def main():
         st.divider()
         st.info("Analysis data is cached for 1 hour. Click 'Run' for fresh data.")
 
+        # --- ⭐️ NEW CODE START ⭐️ ---
+        # Add the author logo at the bottom of the sidebar
+        st.divider()
+        try:
+            st.image("logo.jpg", width=120, use_column_width="auto")
+        except Exception as e:
+            st.warning(f"Could not load logo.jpg: {e}")
+        # --- ⭐️ NEW CODE END ⭐️ ---
+
+
     # --- Main Page ---
     st.title("SPUS Quantitative Dashboard")
     
@@ -747,16 +757,19 @@ def main():
             st.subheader(f"Ranked List ({len(filtered_df)})")
             
             with st.container(height=800):
-                for ticker in filtered_df.index:
-                    score = filtered_df.loc[ticker, 'Final Quant Score']
-                    label = f"{ticker} (Score: {score:.3f})"
-                    
-                    is_selected = (st.session_state.selected_ticker == ticker)
-                    button_type = "primary" if is_selected else "secondary"
-                    
-                    if st.button(label, key=f"rank_{ticker}", use_container_width=True, type=button_type):
-                        st.session_state.selected_ticker = ticker
-                        st.success(f"Selected {ticker}. See 'Ticker Deep Dive' tab.")
+                if filtered_df.empty:
+                    st.warning("No stocks match the current filters.")
+                else:
+                    for ticker in filtered_df.index:
+                        score = filtered_df.loc[ticker, 'Final Quant Score']
+                        label = f"{ticker} (Score: {score:.3f})"
+                        
+                        is_selected = (st.session_state.selected_ticker == ticker)
+                        button_type = "primary" if is_selected else "secondary"
+                        
+                        if st.button(label, key=f"rank_{ticker}", use_container_width=True, type=button_type):
+                            st.session_state.selected_ticker = ticker
+                            st.success(f"Selected {ticker}. See 'Ticker Deep Dive' tab.")
         
         with rank_col2:
             st.subheader("Top 20 Overview")
@@ -805,13 +818,42 @@ def main():
         
         if selected_ticker is None:
             st.info("Go to the 'Quant Rankings' tab and click a ticker to see details.")
+        elif filtered_df.empty:
+            st.info("Go to the 'Quant Rankings' tab and click a ticker to see details.")
         elif selected_ticker not in filtered_df.index:
-            st.warning(f"Ticker '{selected_ticker}' is not in the currently filtered list. Clear filters to see it.")
+            st.warning(f"Ticker '{selected_ticker}' is not in the currently filtered list. Clear filters or select a new ticker.")
         else:
             ticker_data = filtered_df.loc[selected_ticker]
             hist_data = all_histories.get(selected_ticker)
             
             st.subheader(f"Analysis for: {selected_ticker}")
+
+            # --- ⭐️ NEW CODE START ⭐️ ---
+            # Add Previous/Next Buttons
+            try:
+                # Get the full list of tickers from the *filtered* dataframe
+                ticker_list = filtered_df.index.tolist()
+                current_index = ticker_list.index(selected_ticker)
+                
+                # Create columns for the buttons
+                prev_col, next_col, _ = st.columns([1, 1, 4]) # Keep buttons compact
+                
+                # Previous Button
+                is_first = (current_index == 0)
+                if prev_col.button("⬅️ Previous", use_container_width=True, disabled=is_first, key="prev_ticker"):
+                    st.session_state.selected_ticker = ticker_list[current_index - 1]
+                    st.rerun()
+                    
+                # Next Button
+                is_last = (current_index == len(ticker_list) - 1)
+                if next_col.button("Next ➡️", use_container_width=True, disabled=is_last, key="next_ticker"):
+                    st.session_state.selected_ticker = ticker_list[current_index + 1]
+                    st.rerun()
+
+            except ValueError:
+                # This might happen if the ticker is somehow not in the list, though the parent 'if' should prevent it.
+                st.error("Error finding ticker in the list for navigation.")
+            # --- ⭐️ NEW CODE END ⭐️ ---
             
             # *** ADD THIS WARNING DISPLAY ***
             if pd.notna(ticker_data.get('data_warning')):
@@ -905,38 +947,42 @@ def main():
     with tab_port:
         st.header("📈 Portfolio-Level Analytics")
         
-        port_col1, port_col2 = st.columns(2)
-        
-        with port_col1:
-            # --- 4. Statistical Robustness: Correlation Heatmap ---
-            st.subheader("Factor Correlation Heatmap")
-            st.info("This shows if factors are redundant (highly correlated). Aim for low values.")
+        # Check if df is empty before grouping
+        if filtered_df.empty:
+            st.warning("No data to display. Adjust filters.")
+        else:
+            port_col1, port_col2 = st.columns(2)
             
-            corr_matrix = filtered_df[factor_z_cols].corr()
-            corr_heatmap = px.imshow(
-                corr_matrix,
-                text_auto=".2f",
-                aspect="auto",
-                color_continuous_scale='RdBu_r', # Red-Blue
-                zmin=-1, zmax=1,
-                title="Factor Z-Score Correlation Matrix"
-            )
-            st.plotly_chart(corr_heatmap, use_container_width=True)
-            
-        with port_col2:
-            # --- 6. Explainability: Sector Heatmap ---
-            st.subheader("Sector Median Factor Strength")
-            st.info("This shows which factors are strongest/weakest for each sector.")
-            
-            sector_median_factors = filtered_df.groupby('Sector')[factor_z_cols].median()
-            sector_heatmap = px.imshow(
-                sector_median_factors,
-                text_auto=".2f",
-                aspect="auto",
-                color_continuous_scale='Viridis',
-                title="Median Factor Z-Score by Sector"
-            )
-            st.plotly_chart(sector_heatmap, use_container_width=True)
+            with port_col1:
+                # --- 4. Statistical Robustness: Correlation Heatmap ---
+                st.subheader("Factor Correlation Heatmap")
+                st.info("This shows if factors are redundant (highly correlated). Aim for low values.")
+                
+                corr_matrix = filtered_df[factor_z_cols].corr()
+                corr_heatmap = px.imshow(
+                    corr_matrix,
+                    text_auto=".2f",
+                    aspect="auto",
+                    color_continuous_scale='RdBu_r', # Red-Blue
+                    zmin=-1, zmax=1,
+                    title="Factor Z-Score Correlation Matrix"
+                )
+                st.plotly_chart(corr_heatmap, use_container_width=True)
+                
+            with port_col2:
+                # --- 6. Explainability: Sector Heatmap ---
+                st.subheader("Sector Median Factor Strength")
+                st.info("This shows which factors are strongest/weakest for each sector.")
+                
+                sector_median_factors = filtered_df.groupby('Sector')[factor_z_cols].median()
+                sector_heatmap = px.imshow(
+                    sector_median_factors,
+                    text_auto=".2f",
+                    aspect="auto",
+                    color_continuous_scale='Viridis',
+                    title="Median Factor Z-Score by Sector"
+                )
+                st.plotly_chart(sector_heatmap, use_container_width=True)
             
 
 # --- ⭐️ 6. Scheduler Entry Point ---
