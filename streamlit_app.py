@@ -356,14 +356,22 @@ def run_full_analysis(CONFIG):
     status_text = st.empty()
     status_text.info("يتم الآن بدء التحليل...")
     MAX_RISK_USD = 50
+    
+    # --- ⭐️ FIX for KeyError ⭐️ ---
+    # Use .get() to provide a default log file name if it's missing from config.json
+    log_file_name = CONFIG.get('LOG_FILE_PATH', 'spus_analysis.log')
+    log_file_full_path = os.path.join(BASE_DIR, log_file_name)
+    
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler(os.path.join(BASE_DIR, CONFIG['LOG_FILE_PATH'])),
+            logging.FileHandler(log_file_full_path), # Use the safe path
             logging.StreamHandler()
         ]
     )
+    # --- ⭐️ END FIX ⭐️ ---
+
     status_text.info("... (1/7) جارٍ جلب قائمة الرموز (Tickers)...")
     ticker_symbols = fetch_spus_tickers() 
     if not ticker_symbols:
@@ -723,7 +731,8 @@ def main():
     # --- ⭐️ Redesigned Sidebar ---
     with st.sidebar:
         # --- ⭐️⭐️⭐️ LOGO CHANGE HERE ⭐️⭐️⭐️ ---
-        st.image("logo.png", width=200) # <-- ⭐️ CHANGED to your local logo file
+        # --- ⭐️ FIXED to match your uploaded file 'logo.jpg' ⭐️ ---
+        st.image("logo.jpg", width=200) 
         # --- ⭐️⭐️⭐️ END LOGO CHANGE ⭐️⭐️⭐️ ---
         st.title("SPUS Quant Analyzer")
         st.markdown("تحليل كمي متقدم لمحفظة SPUS.")
