@@ -532,6 +532,92 @@ def create_radar_chart(ticker_data, factor_cols):
     )
     return fig
 
+# --- ⭐️ NEW CODE START ⭐️ ---
+def display_buy_signal_checklist(ticker_data):
+    """
+    Displays a 4-step checklist on the Ticker Deep Dive tab,
+    showing which buy criteria are met.
+    """
+    
+    # --- Define Thresholds (based on the guide's examples) ---
+    SCORE_THRESHOLD = 1.0
+    FACTOR_Z_THRESHOLD = 0.5 # "Good" factor (guide says "high", we'll use > 0.5)
+    RSI_OVERBOUGHT = 70.0
+    RR_RATIO_THRESHOLD = 1.5
+
+    # --- Check Each Step ---
+    
+    # Step 1: Quant Score
+    step1_met = False
+    step1_text = f"**1. Quant Score > {SCORE_THRESHOLD}**"
+    score = ticker_data.get('Final Quant Score', 0)
+    if pd.notna(score) and score > SCORE_THRESHOLD:
+        step1_met = True
+    step1_details = f"Score is {score:.2f}"
+
+    # Step 2: Factor Profile (Value & Quality)
+    step2_met = False
+    step2_text = f"**2. Value & Quality > {FACTOR_Z_THRESHOLD}**"
+    z_value = ticker_data.get('Z_Value', -99)
+    z_quality = ticker_data.get('Z_Quality', -99)
+    if pd.notna(z_value) and pd.notna(z_quality) and (z_value > FACTOR_Z_THRESHOLD) and (z_quality > FACTOR_Z_THRESHOLD):
+        step2_met = True
+    step2_details = f"Value: {z_value:.2f}, Quality: {z_quality:.2f}"
+
+    # Step 3: Technicals
+    step3_met = False
+    step3_text = "**3. Favorable Technicals**"
+    
+    trend = ticker_data.get('Trend (50/200 Day MA)', 'N/A')
+    rsi = ticker_data.get('RSI', 50)
+    macd_sig = ticker_data.get('MACD_Signal', 'N/A')
+
+    trend_ok = (trend == 'Confirmed Uptrend')
+    rsi_ok = (pd.notna(rsi) and rsi < RSI_OVERBOUGHT)
+    macd_ok = (macd_sig in ['Bullish', 'Bullish Crossover'])
+    
+    if trend_ok and rsi_ok and macd_ok:
+        step3_met = True
+    
+    # Build details with emojis
+    trend_icon = "✅" if trend_ok else "❌"
+    rsi_icon = "✅" if rsi_ok else "❌"
+    macd_icon = "✅" if macd_ok else "❌"
+    
+    step3_details = (
+        f"{trend_icon} Trend: {trend}<br>"
+        f"{rsi_icon} RSI: {rsi:.1f} (Not Overbought)<br>"
+        f"{macd_icon} MACD: {macd_sig}"
+    )
+
+    # Step 4: Risk/Reward
+    step4_met = False
+    step4_text = f"**4. R/R Ratio > {RR_RATIO_THRESHOLD}**"
+    rr_ratio = ticker_data.get('Risk/Reward Ratio', 0)
+    if pd.notna(rr_ratio) and rr_ratio > RR_RATIO_THRESHOLD:
+        step4_met = True
+    step4_details = f"Ratio is {rr_ratio:.2f}"
+    
+    # --- Display in Columns ---
+    st.subheader("Buy Signal Checklist")
+    cols = st.columns(4)
+    
+    criteria = [
+        (step1_met, step1_text, step1_details),
+        (step2_met, step2_text, step2_details),
+        (step3_met, step3_text, step3_details),
+        (step4_met, step4_text, step4_details)
+    ]
+    
+    for i, (met, text, details) in enumerate(criteria):
+        with cols[i]:
+            icon = "✅" if met else "❌"
+            # Use st.metric for a "card" look
+            st.markdown(f"**{icon} {text}**")
+            st.markdown(details, unsafe_allow_html=True) # For the <br> in step 3
+# --- ⭐️ NEW CODE END ⭐️ ---
+
+
 # --- ⭐️ 5. Main Streamlit Application ⭐️ ---
 
 def main():
@@ -750,6 +836,37 @@ def main():
         st.header("🏆 Top Stocks by Final Quant Score")
         st.info("Click a ticker to select it for the 'Ticker Deep Dive' tab.")
         
+        # --- ⭐️ NEW CODE START ⭐️ ---
+        with st.expander("How to Find a Good Buy Signal (4-Step Guide)", expanded=False):
+            st.markdown("""
+                This 4-step method helps you use the app to find suitable buying opportunities.
+                
+                ### 1. Check the Final Quant Score (The "What")
+                This is your primary signal. Look for stocks with a **high positive score** (e.g., > 1.0) 
+                in the ranked list below. This suggests the stock is "better than average" 
+                across the factors you selected.
+                
+                ### 2. Check the Factor Profile (The "Why")
+                Click a stock and go to the **"🔬 Ticker Deep Dive"** tab. Look at the 
+                **"Factor Profile"** radar chart. This tells you *why* the score is high. 
+                Is it high on `Value` (it's cheap) and `Quality` (it's a good company)? 
+                This helps you buy stocks that match your strategy.
+                
+                ### 3. Check the Technicals (The "When")
+                On the **"Deep Dive"** tab, look at the **"Price Chart"** and metrics.
+                * **Trend (50/200 Day MA):** Is the trend "Confirmed Uptrend"?
+                * **RSI/MACD:** Are the technical signals (`RSI`, `MACD_Signal`) favorable 
+                    (e.g., not "overbought" or "bearish")?
+                
+                ### 4. Check the Risk & Sizing (The "How")
+                In the **"Risk & Position Sizing"** section, check the:
+                * **Risk/Reward Ratio:** Is it favorable (e.g., > 1.5)?
+                * **Stop Loss Price:** Is this exit price acceptable to you?
+                * **Position Size (USD):** This calculates how much to invest for 
+                    your pre-defined risk amount (e.g., $50).
+            """)
+        # --- ⭐️ NEW CODE END ⭐️ ---
+        
         # --- Column layout (List + Details) ---
         rank_col1, rank_col2 = st.columns([1, 2])
         
@@ -855,6 +972,12 @@ def main():
                 st.error("Error finding ticker in the list for navigation.")
             # --- ⭐️ NEW CODE END ⭐️ ---
             
+            # --- ⭐️⭐️ NEW CHECKLIST SECTION START ⭐️⭐️ ---
+            # Call the new function here
+            display_buy_signal_checklist(ticker_data)
+            st.divider() # Add a divider after the checklist
+            # --- ⭐️⭐️ NEW CHECKLIST SECTION END ⭐️⭐️ ---
+
             # *** ADD THIS WARNING DISPLAY ***
             if pd.notna(ticker_data.get('data_warning')):
                 st.warning(f"⚠️ **Data Warning:** {ticker_data['data_warning']}")
