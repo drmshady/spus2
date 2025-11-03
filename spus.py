@@ -261,9 +261,7 @@ def is_data_valid(data, source="yfinance"):
         
     return True
 
-# --- ⭐️ MODIFIED FUNCTION ⭐️ ---
-# Added 'risk_per_trade_amount' as an argument
-def parse_ticker_data(data, ticker_symbol, risk_per_trade_amount=None):
+def parse_ticker_data(data, ticker_symbol):
     """
     Parses data from either yfinance or Alpha Vantage into a common format.
     Also calculates all TA metrics.
@@ -293,7 +291,6 @@ def parse_ticker_data(data, ticker_symbol, risk_per_trade_amount=None):
             parsed['enterpriseToEbitda'] = info.get('enterpriseToEbitda')
             parsed['freeCashflow'] = info.get('freeCashflow')
             parsed['trailingEps'] = info.get('trailingEps')
-            parsed['dividendYield'] = info.get('dividendYield') # Get dividend yield
         else: # Alpha Vantage mapping
             parsed['forwardPE'] = float(info.get('ForwardPE', 'nan'))
             parsed['priceToBook'] = float(info.get('PriceToBookRatio', 'nan'))
@@ -303,13 +300,12 @@ def parse_ticker_data(data, ticker_symbol, risk_per_trade_amount=None):
             parsed['enterpriseToEbitda'] = float(info.get('EVToEBITDA', 'nan'))
             parsed['freeCashflow'] = None # Not in AV Overview
             parsed['trailingEps'] = float(info.get('EPS', 'nan'))
-            parsed['dividendYield'] = float(info.get('DividendYield', 'nan')) # Get dividend yield
-
+        
         # Derived Value Metrics
         parsed['P/FCF'] = (parsed['marketCap'] / parsed['freeCashflow']) if parsed['marketCap'] and parsed['freeCashflow'] else np.nan
         
         bvps = None
-        if parsed['priceToBook'] and last_price and parsed['priceToBook'] != 0: # <-- Add check for 0
+        if parsed['priceToBook'] and last_price:
             bvps = last_price / parsed['priceToBook']
         
         # *** CORRECTED FOR RUNTIMEWARNING ***
@@ -341,9 +337,7 @@ def parse_ticker_data(data, ticker_symbol, risk_per_trade_amount=None):
             returns_1y = daily_returns.iloc[-252:]
             parsed['volatility_1y'] = returns_1y.std() * np.sqrt(252)
         else:
-            # Fallback if less than 1y data
-            parsed['volatility_1y'] = daily_returns.std() * np.sqrt(252) if len(daily_returns) > 1 else np.nan
-
+            parsed['volatility_1y'] = np.nan
 
         parsed['risk_adjusted_momentum'] = (parsed['momentum_12m'] / parsed['volatility_1y']) if parsed['momentum_12m'] and parsed['volatility_1y'] else np.nan
 
@@ -444,8 +438,8 @@ def parse_ticker_data(data, ticker_symbol, risk_per_trade_amount=None):
         last_short_ma = hist[short_ma_col].iloc[-1] if short_ma_col in hist.columns and not hist[short_ma_col].isnull().all() else np.nan
         last_long_ma = hist[long_ma_col].iloc[-1] if long_ma_col in hist.columns and not hist[long_ma_col].isnull().all() else np.nan
         
-        parsed['Price_vs_SMA50'] = (last_price / last_short_ma) if last_short_ma and last_short_ma != 0 else np.nan
-        parsed['Price_vs_SMA200'] = (last_price / last_long_ma) if last_long_ma and last_long_ma != 0 else np.nan
+        parsed['Price_vs_SMA50'] = (last_price / last_short_ma) if last_short_ma else np.nan
+        parsed['Price_vs_SMA200'] = (last_price / last_long_ma) if last_long_ma else np.nan
         
         # Old Trend/MACD signals (for compatibility)
         hist_val = hist[macd_h_col].iloc[-1] if macd_h_col in hist.columns else np.nan
@@ -511,15 +505,8 @@ def parse_ticker_data(data, ticker_symbol, risk_per_trade_amount=None):
         atr_sl_mult = rm_config.get('ATR_STOP_LOSS_MULTIPLIER', 1.5)
         # Get the new config values
         fib_target_mult = 1.618 # Fibonacci 1.618 Extension Target
+        risk_per_trade_usd = rm_config.get('RISK_PER_TRADE_AMOUNT', 500) # Default $500 risk
         
-        # --- ⭐️ MODIFICATION: Use passed-in risk amount ⭐️ ---
-        if risk_per_trade_amount is not None:
-            risk_per_trade_usd = risk_per_trade_amount
-        else:
-            # Fallback to config file if nothing is passed
-            risk_per_trade_usd = rm_config.get('RISK_PER_TRADE_AMOUNT', 50) # Use 50 as default
-        # --- ⭐️ END MODIFICATION ⭐️ ---
-            
         atr = parsed.get('ATR')
         last_price = parsed.get('last_price')
         support_90d = parsed.get('Support_90d')
@@ -586,9 +573,7 @@ def parse_ticker_data(data, ticker_symbol, risk_per_trade_amount=None):
 
 # --- MAIN PROCESS FUNCTION ---
 
-# --- ⭐️ MODIFIED FUNCTION ⭐️ ---
-# Added 'risk_per_trade_amount' as an argument
-def process_ticker(ticker, risk_per_trade_amount=None):
+def process_ticker(ticker):
     """
     Main ticker processing function.
     Attempts yfinance, validates, falls back to Alpha Vantage, validates,
@@ -611,10 +596,10 @@ def process_ticker(ticker, risk_per_trade_amount=None):
         logging.warning(f"[{ticker}] yfinance data invalid. Trying Alpha Vantage fallback.")
         
         # *** CORRECTED FOR API KEY ROTATION ***
-        av_keys_list = CONFIG.get('DATA_PROVIDERS', {}).get('ALPHA_VANTAGE_API_KEY', []) # <-- Corrected key
+        av_keys_list = CONFIG.get('DATA_PROVIDERS', {}).get('ALPHA_VANTAGE_API_KEYS', [])
         
         if not av_keys_list:
-            logging.error(f"[{ticker}] Alpha Vantage fallback failed: No API keys found in config.json under DATA_PROVIDERS.ALPHA_VANTAGE_API_KEY.")
+            logging.error(f"[{ticker}] Alpha Vantage fallback failed: No API keys found in config.json under ALPHA_VANTAGE_API_KEYS.")
             av_data = None
         else:
             # Select a random key from the list
@@ -625,20 +610,11 @@ def process_ticker(ticker, risk_per_trade_amount=None):
             data_to_parse = av_data
         else:
             logging.error(f"[{ticker}] All data providers failed or returned invalid data.")
-            # --- MODIFICATION: Return yf_data if it exists, even if invalid ---
-            # This allows parsing of partial data (e.g., for delisted tickers)
-            if yf_data:
-                logging.warning(f"[{ticker}] Proceeding with invalid yfinance data as a last resort.")
-                data_to_parse = yf_data
-            else:
-                return {'ticker': ticker, 'success': False, 'error': 'All data providers failed'}
-            # --- END MODIFICATION ---
-
+            return {'ticker': ticker, 'success': False, 'error': 'All data providers failed'}
             
     # 3. Parse and Calculate
     try:
-        # --- ⭐️ MODIFIED: Pass risk_per_trade_amount ⭐️ ---
-        parsed_data = parse_ticker_data(data_to_parse, ticker, risk_per_trade_amount=risk_per_trade_amount)
+        parsed_data = parse_ticker_data(data_to_parse, ticker)
         return parsed_data
     except Exception as e:
         logging.critical(f"[{ticker}] Unhandled exception in parse_ticker_data: {e}", exc_info=True)
