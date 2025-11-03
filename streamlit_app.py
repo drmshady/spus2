@@ -606,7 +606,7 @@ def display_buy_signal_checklist(ticker_data):
         (step1_met, step1_text, step1_details),
         (step2_met, step2_text, step2_details),
         (step3_met, step3_text, step3_details),
-        (step4_met, step_4_text, step4_details)
+        (step4_met, step4_text, step4_details)
     ]
     
     for i, (met, text, details) in enumerate(criteria):
@@ -669,23 +669,14 @@ def main():
             "Size": 0.10, "LowVolatility": 0.15, "Technical": 0.15
         })
         
-        # --- ⭐️⭐️ CODE MODIFIED START ⭐️⭐️ ---
-        # Define the callback function first
-        def callback_reset_weights():
-            """
-            This function is called when the reset button is clicked.
-            It deletes all factor weight keys from session state.
-            """
+        # *** ADDED RESET BUTTON ***
+        if st.button("Reset Factor Weights"):
             for factor in default_weights.keys():
+                # This slider key format must match the key in st.slider below
                 key_to_del = f"weight_{factor}" 
                 if key_to_del in st.session_state:
                     del st.session_state[key_to_del]
-
-        # Use the on_click callback in the button
-        st.button("Reset Factor Weights", on_click=callback_reset_weights)
-        
-        # REMOVED the old `if st.button(...)` logic
-        # --- ⭐️⭐️ CODE MODIFIED END ⭐️⭐️ ---
+            st.rerun()
 
         # --- 7. UI: Factor Weight Sliders ---
         st.subheader("Factor Weights")
@@ -1125,7 +1116,7 @@ def run_analysis_for_scheduler():
     Does NOT use Streamlit.
     """
     print("--- [SPUS SCHEDULER] ---")
-    # *** USE SAUDI TIMEZONE ---
+    # *** USE SAUDI TIMEZONE ***
     print(f"Starting scheduled analysis at {datetime.now(SAUDI_TZ)}...")
     
     # Setup basic print logging for the scheduler
