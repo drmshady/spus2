@@ -731,8 +731,8 @@ def main():
     # --- ⭐️ Redesigned Sidebar ---
     with st.sidebar:
         # --- ⭐️⭐️⭐️ LOGO CHANGE HERE ⭐️⭐️⭐️ ---
-        # --- ⭐️ FIXED to match your uploaded file 'logo.jpg' ⭐️ ---
-        st.image("logo.jpg", width=200) 
+        # --- ⭐️ Restored to your original 'logo.png' ⭐️ ---
+        st.image("logo.png", width=200) #
         # --- ⭐️⭐️⭐️ END LOGO CHANGE ⭐️⭐️⭐️ ---
         st.title("SPUS Quant Analyzer")
         st.markdown("تحليل كمي متقدم لمحفظة SPUS.")
@@ -763,7 +763,7 @@ def main():
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
         else:
-            st.info("قم بتشغيل التحليل أولاً لإنشاء التقارير.")
+            st.info("قم بتشغيل التحليل أولاً لإنشاء التقارIR.")
 
         if pdf_path:
             with open(pdf_path, "rb") as file:
