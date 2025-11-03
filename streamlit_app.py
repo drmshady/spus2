@@ -703,7 +703,14 @@ def main():
 
     # --- Sidebar ---
     with st.sidebar:
-        st.image("https://www.sp-funds.com/wp-content/uploads/2022/02/SP-Funds-Logo-Primary-Wht-1.svg", width=200)
+        # --- ⭐️⭐️ CODE MODIFIED START ⭐️⭐️ ---
+        # Replaced SP-Funds logo with user's logo.jpg
+        try:
+            st.image("logo.jpg", width=200)
+        except Exception as e:
+            st.warning(f"Could not load logo.jpg: {e}")
+        # --- ⭐️⭐️ CODE MODIFIED END ⭐️⭐️ ---
+        
         st.title("SPUS Quant Analyzer")
         st.markdown("Research-Grade Multi-Factor Analysis")
         st.divider()
@@ -784,14 +791,7 @@ def main():
         st.divider()
         st.info("Analysis data is cached for 1 hour. Click 'Run' for fresh data.")
 
-        # --- ⭐️ NEW CODE START ⭐️ ---
-        # Add the author logo at the bottom of the sidebar
-        st.divider()
-        try:
-            st.image("logo.jpg", width=120, use_column_width="auto")
-        except Exception as e:
-            st.warning(f"Could not load logo.jpg: {e}")
-        # --- ⭐️ NEW CODE END ⭐️ ---
+        # --- ⭐️ Logo was moved to the top ⭐️ ---
 
 
     # --- Main Page ---
