@@ -59,6 +59,7 @@ except ImportError:
     logging.warning("Module 'reportlab' not found. PDF report generation will be disabled.")
 
 # --- ⭐️ 2. Custom CSS (Modified) ⭐️ ---
+# --- ⭐️ 2. Custom CSS (Corrected) ⭐️ ---
 def load_css():
     """Injects custom CSS for a modern, minimal, card-based theme."""
     st.markdown(f"""
@@ -82,13 +83,14 @@ def load_css():
             width: 100%; border-radius: 8px; font-weight: 600;
         }}
         
-        /* --- ⭐️ MODIFIED: Radio-to-Tabs styling ⭐️ --- */
+        /* --- ⭐️ CORRECTED: Radio-to-Tabs styling ⭐️ --- */
         [data-testid="stRadio"] > label[data-baseweb="radio"] {{
             display: none; /* Hides the "Navigation:" label */
         }}
         [data-testid="stRadio"] > div[role="radiogroup"] {{
             display: flex;
             flex-direction: row;
+            justify-content: stretch; /* Make items stretch to fill */
             border-bottom: 2px solid var(--gray-800);
             margin-bottom: 1.5rem;
             width: 100%;
@@ -105,8 +107,12 @@ def load_css():
             border-bottom: none;
             margin-bottom: -2px; /* Pulls the bottom border up */
             transition: all 0.2s ease;
-            width: 100%;
-            text-align: center;
+            
+            /* --- THIS IS THE FIX --- */
+            width: auto;      /* Was 100% */
+            flex-grow: 1;     /* New: Make tabs share space */
+            text-align: center; /* New: Center text */
+            /* --- END OF FIX --- */
         }}
         /* The selected "tab" */
         [data-testid="stRadio"] input[type="radio"]:checked + div {{
@@ -122,7 +128,7 @@ def load_css():
             background-color: var(--gray-900);
             border-radius: 8px 8px 0 0;
         }}
-        /* --- ⭐️ END OF MODIFICATION ⭐️ --- */
+        /* --- ⭐️ END OF CORRECTION ⭐️ --- */
         
         [data-testid="stMetric"] {{
             background-color: var(--background-color);
@@ -131,7 +137,6 @@ def load_css():
         }}
     </style>
     """, unsafe_allow_html=True)
-
 
 # --- ⭐️ 3. Core Analysis Logic (MODIFIED - Moved to Global Scope) ⭐️ ---
 
