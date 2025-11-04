@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v18.3 (Type-Casting Fix)
+SPUS Quantitative Analyzer v18.4 (Boolean Type-Casting Fix)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -9,8 +9,10 @@ SPUS Quantitative Analyzer v18.3 (Type-Casting Fix)
 - REWORKED: find_order_blocks for SMC (BOS, Mitigation, Validation).
 - FIXED: Replaced pandas_ta.pivothigh/low with scipy.signal.argrelextrema.
 - FIXED: Corrected logic in find_order_blocks.
-- FIXED: Added explicit type-casting (float, str) in parse_ticker_data
-  to handle inconsistent data from yfinance/AV and prevent pyarrow errors.
+- FIXED: Added explicit type-casting (float, str) in parse_ticker_data.
+- FIXED: Corrected boolean casting for 'earnings_volatile' and 
+  'earnings_negative' to ensure they are always bool or np.nan, 
+  preventing pyarrow conversion errors.
 - ADDED: 'entry_signal' filter based on proximity to validated OBs.
 - MODIFIED: Risk logic to use dynamic 'Final Stop Loss' comparing
   ATR vs. 'Cut Loss' (last swing low).
@@ -383,11 +385,9 @@ def is_data_valid(data, source="yfinance"):
         return False
         
     info = data.get("info", {})
-    # --- ADDED: Check if info is a dictionary ---
     if not isinstance(info, dict):
-        logging.warning(f"[{data.get('ticker', 'TICKER')}] Info object is not a dictionary. Data is invalid.")
+        logging.warning(f"Info object is not a dictionary. Data is invalid.")
         return False
-    # --- END OF ADDED CHECK ---
     
     if source == "yfinance":
         key_fields = ['sector', 'marketCap', 'trailingEps', 'priceToBook', 'returnOnEquity', 'forwardPE']
@@ -413,7 +413,7 @@ def parse_ticker_data(data, ticker_symbol):
     earnings_data = data['earnings_data']
     source = data['source']
     
-    parsed = {'ticker': ticker_symbol, 'success': True, 'source': source}
+    parsed = {'ticker': ticker_symbol, 'success': True, 'source': str(source)} # Force string
     parsed['data_warning'] = None
     
     try:
@@ -453,7 +453,7 @@ def parse_ticker_data(data, ticker_symbol):
             except (TypeError, ValueError):
                 parsed['trailingEps'] = np.nan
                 
-        else: # Alpha Vantage mapping (already casts to float)
+        else: # Alpha Vantage mapping
             parsed['forwardPE'] = float(info.get('ForwardPE', 'nan'))
             parsed['priceToBook'] = float(info.get('PriceToBookRatio', 'nan'))
             parsed['marketCap'] = float(info.get('MarketCapitalization', 'nan'))
@@ -471,10 +471,11 @@ def parse_ticker_data(data, ticker_symbol):
         
         if pd.notna(parsed['trailingEps']) and pd.notna(bvps) and parsed['trailingEps'] > 0 and bvps > 0:
             parsed['grahamNumber'] = (22.5 * parsed['trailingEps'] * bvps) ** 0.5
-            parsed['grahamValuation'] = "Undervalued (Graham)" if last_price < parsed['grahamNumber'] else "Overvalued (Graham)"
+            parsed['grahamValuation'] = "Undervalued (Graham)"
         else:
             parsed['grahamNumber'] = np.nan
             parsed['grahamValuation'] = "N/A (Unprofitable)" if pd.notna(parsed['trailingEps']) and parsed['trailingEps'] <= 0 else "N/A (Missing Data)"
+        parsed['grahamValuation'] = str(parsed['grahamValuation']) # Force string
 
 
         # --- 2. Momentum Factors ---
@@ -526,30 +527,38 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['returnOnAssets'] = float(info.get('ReturnOnAssetsTTM', 'nan'))
             parsed['debtToEquity'] = float(info.get('DebtToEquityRatio', 'nan'))
 
-        # Earnings volatility (simplified)
+        # --- 3.5. Quality Booleans (FIXED) ---
         if source == "yfinance" and earnings_data.get("quarterly_earnings") is not None and not earnings_data["quarterly_earnings"].empty:
             quarterly_data = earnings_data["quarterly_earnings"]
             
+            q_eps = pd.Series([np.nan]) # Default
             if 'Net Income' in quarterly_data.index:
                 q_eps = quarterly_data.loc['Net Income']
             elif 'Earnings' in quarterly_data.columns:
                  q_eps = quarterly_data['Earnings']
             else:
                  logging.warning(f"[{ticker_symbol}] Could not find 'Net Income' (index) or 'Earnings' (column) in quarterly data.")
-                 q_eps = pd.Series([np.nan])
                  
             q_eps = pd.to_numeric(q_eps, errors='coerce').dropna()
 
             if not q_eps.empty and q_eps.abs().mean() != 0:
-                parsed['earnings_volatile'] = bool((q_eps.std() / q_eps.abs().mean()) > 0.5) # Coeff of variation
+                cv = (q_eps.std() / q_eps.abs().mean())
+                # Explicitly check for nan before casting
+                parsed['earnings_volatile'] = bool(cv > 0.5) if pd.notna(cv) else np.nan
             else:
                 parsed['earnings_volatile'] = np.nan
             
             # Use the already-cleaned trailingEps
-            parsed['earnings_negative'] = bool(parsed.get('trailingEps', 0) < 0) if pd.notna(parsed.get('trailingEps')) else np.nan
-        else:
+            eps_val = parsed.get('trailingEps')
+            parsed['earnings_negative'] = bool(eps_val < 0) if pd.notna(eps_val) else np.nan
+        
+        else: # Alpha Vantage or no earnings data
             parsed['earnings_volatile'] = np.nan
-            parsed['earnings_negative'] = bool(parsed.get('trailingEps', 0) < 0) if pd.notna(parsed.get('trailingEps')) else np.nan
+            eps_val = parsed.get('trailingEps')
+            # --- THIS WAS THE BUG ---
+            # Explicitly cast to bool OR np.nan
+            parsed['earnings_negative'] = bool(eps_val < 0) if pd.notna(eps_val) else np.nan
+        
             
         # --- 4. Size Factors (WITH TYPE CASTING) ---
         if source == "yfinance":
@@ -582,7 +591,7 @@ def parse_ticker_data(data, ticker_symbol):
         min_hist_len = max(cfg.get('LONG_MA_WINDOW', 200), 252) 
         if len(hist) < min_hist_len:
             warning_msg = f"Short history ({len(hist)} days). TA/Risk metrics may be N/A or unreliable."
-            parsed['data_warning'] = warning_msg
+            parsed['data_warning'] = str(warning_msg) # Force string
             logging.warning(f"[{ticker_symbol}] {warning_msg}")
         
         hist.ta.rsi(length=cfg['RSI_WINDOW'], append=True)
@@ -613,23 +622,23 @@ def parse_ticker_data(data, ticker_symbol):
         parsed['Price_vs_SMA200'] = (last_price / last_long_ma) if last_long_ma and last_long_ma != 0 else np.nan
         
         hist_val = hist[macd_h_col].iloc[-1] if macd_h_col in hist.columns else np.nan
+        trend_str = "N/A"
         if not pd.isna(last_short_ma) and not pd.isna(last_long_ma):
             if last_short_ma > last_long_ma:
-                parsed['Trend (50/200 Day MA)'] = 'Confirmed Uptrend' if last_price > last_short_ma else 'Uptrend (Correction)'
+                trend_str = 'Confirmed Uptrend' if last_price > last_short_ma else 'Uptrend (Correction)'
             else:
-                parsed['Trend (50/200 Day MA)'] = 'Confirmed Downtrend' if last_price < last_short_ma else 'Downtrend (Rebound)'
-        else:
-            parsed['Trend (50/200 Day MA)'] = 'N/A'
+                trend_str = 'Confirmed Downtrend' if last_price < last_short_ma else 'Downtrend (Rebound)'
+        parsed['Trend (50/200 Day MA)'] = str(trend_str) # Force string
             
+        macd_str = "N/A"
         if macd_h_col in hist.columns and len(hist) >= 2 and not pd.isna(hist_val):
             prev_hist = hist[macd_h_col].iloc[-2]
             if not pd.isna(prev_hist):
-                if hist_val > 0 and prev_hist <= 0: parsed['MACD_Signal'] = "Bullish Crossover"
-                elif hist_val < 0 and prev_hist >= 0: parsed['MACD_Signal'] = "Bearish Crossover"
-                elif hist_val > 0: parsed['MACD_Signal'] = "Bullish"
-                else: parsed['MACD_Signal'] = "Bearish"
-            else: parsed['MACD_Signal'] = "N/A"
-        else: parsed['MACD_Signal'] = "N/A"
+                if hist_val > 0 and prev_hist <= 0: macd_str = "Bullish Crossover"
+                elif hist_val < 0 and prev_hist >= 0: macd_str = "Bearish Crossover"
+                elif hist_val > 0: macd_str = "Bullish"
+                else: macd_str = "Bearish"
+        parsed['MACD_Signal'] = str(macd_str) # Force string
 
         # --- 7. Other Info ---
         parsed['hist_df'] = hist # For plotly charts
@@ -703,11 +712,12 @@ def parse_ticker_data(data, ticker_symbol):
                         parsed['last_dividend_value'] = np.nan
 
                 calendar = earnings_data.get('calendar', {})
+                date_val = "N/A"
                 if calendar and 'Earnings Date' in calendar and calendar['Earnings Date']:
-                    date_val = calendar['Earnings Date'][0]
-                    parsed['next_earnings_date'] = pd.to_datetime(date_val).strftime('%Y-%m-%d') if pd.notna(date_val) else "N/A"
-                else:
-                    parsed['next_earnings_date'] = "N/A"
+                    raw_date = calendar['Earnings Date'][0]
+                    date_val = pd.to_datetime(raw_date).strftime('%Y-%m-%d') if pd.notna(raw_date) else "N/A"
+                parsed['next_earnings_date'] = str(date_val) # Force string
+
             except Exception as e:
                  logging.warning(f"[{ticker_symbol}] Error parsing news/calendar: {e}")
                  parsed['news_list'] = []
@@ -738,6 +748,7 @@ def parse_ticker_data(data, ticker_symbol):
         final_stop_loss_price = np.nan
         stop_loss_price_atr = np.nan
         stop_loss_price_cutloss = np.nan
+        sl_method_str = "N/A"
         
         if pd.notna(atr) and atr > 0:
             stop_loss_price_atr = last_price - (atr * atr_sl_mult)
@@ -749,20 +760,24 @@ def parse_ticker_data(data, ticker_symbol):
             
         if use_cut_loss_filter and pd.notna(stop_loss_price_atr) and pd.notna(stop_loss_price_cutloss):
             final_stop_loss_price = max(stop_loss_price_atr, stop_loss_price_cutloss) # Tighter stop
-            parsed['SL_Method'] = "Cut-Loss" if final_stop_loss_price == stop_loss_price_cutloss else "ATR"
+            sl_method_str = "Cut-Loss" if final_stop_loss_price == stop_loss_price_cutloss else "ATR"
+            logging.info(f"[{ticker_symbol}] SL Filter: ATR ({stop_loss_price_atr:.2f}) vs CutLoss ({stop_loss_price_cutloss:.2f}). Chose: {sl_method_str}")
+        
         elif pd.notna(stop_loss_price_atr):
             final_stop_loss_price = stop_loss_price_atr
-            parsed['SL_Method'] = "ATR"
+            sl_method_str = "ATR"
         elif pd.notna(stop_loss_price_cutloss):
             final_stop_loss_price = stop_loss_price_cutloss
-            parsed['SL_Method'] = "Cut-Loss"
+            sl_method_str = "Cut-Loss"
         elif pd.notna(support_90d) and support_90d < last_price:
             final_stop_loss_price = support_90d
-            parsed['SL_Method'] = "90-Day Low"
+            sl_method_str = "90-Day Low"
         else:
             if pd.notna(last_price):
                 final_stop_loss_price = last_price * 0.90 # 10% hard stop
-                parsed['SL_Method'] = "10% Fallback"
+                sl_method_str = "10% Fallback"
+        
+        parsed['SL_Method'] = str(sl_method_str) # Force string
 
         if pd.notna(final_stop_loss_price) and final_stop_loss_price < last_price:
             risk_per_share = last_price - final_stop_loss_price
@@ -793,8 +808,6 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['Position Size (Shares)'] = np.nan
             parsed['Position Size (USD)'] = np.nan
             parsed['Risk Per Trade (USD)'] = risk_per_trade_usd
-            if 'SL_Method' not in parsed:
-                parsed['SL_Method'] = "N/A"
         
         if 'Stop Loss (ATR)' not in parsed:
             parsed['Stop Loss (ATR)'] = np.nan
