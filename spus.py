@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v18 (Institutional SMC Upgrade)
+SPUS Quantitative Analyzer v18.1 (SMC Pivot Fix)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
 - Includes robust data fetching for tickers and fundamentals.
 - Modular functions to be called by analysis script.
 - REWORKED: find_order_blocks for SMC (BOS, Mitigation, Validation).
+- FIXED: Replaced pandas_ta.pivothigh/low with scipy.signal.argrelextrema
+  to resolve AttributeError and improve compatibility.
 - ADDED: 'entry_signal' filter based on proximity to validated OBs.
 - MODIFIED: Risk logic to use dynamic 'Final Stop Loss' comparing
   ATR vs. 'Cut Loss' (last swing low).
@@ -26,6 +28,7 @@ import json
 import numpy as np
 from bs4 import BeautifulSoup
 import random
+from scipy.signal import argrelextrema # <-- IMPORT FIX
 
 # --- Define Base Directory ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -164,10 +167,17 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
     try:
         hist_df = hist_df_full.iloc[-lookback:].copy()
         
-        # --- 2. Find Swing Highs/Lows ---
-        hist_df['sh'] = hist_df.ta.pivothigh(left=pivots_n, right=pivots_n)
-        hist_df['sl'] = hist_df.ta.pivotlow(left=pivots_n, right=pivots_n)
+        # --- 2. Find Swing Highs/Lows (FIXED with Scipy) ---
+        high_idx = argrelextrema(hist_df['High'].values, np.greater_equal, order=pivots_n)[0]
+        low_idx = argrelextrema(hist_df['Low'].values, np.less_equal, order=pivots_n)[0]
         
+        hist_df['sh'] = np.nan
+        # Use .iloc[index_list, column_index] to set values
+        hist_df.iloc[high_idx, hist_df.columns.get_loc('sh')] = hist_df.iloc[high_idx]['High']
+        hist_df['sl'] = np.nan
+        hist_df.iloc[low_idx, hist_df.columns.get_loc('sl')] = hist_df.iloc[low_idx]['Low']
+        # --- END OF FIX ---
+
         swing_highs = hist_df[hist_df['sh'].notna()]
         swing_lows = hist_df[hist_df['sl'].notna()]
 
@@ -182,7 +192,9 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
 
         # --- 3. Find Most Recent Bullish OB (BOS Up) ---
         # Look for a close *above* the last swing high
-        bos_up_candles = hist_df.loc[last_sh.name:][hist_df['Close'] > last_sh.sh]
+        # Need to slice hist_df *after* the last_sh index
+        hist_after_sh = hist_df.loc[last_sh.name:]
+        bos_up_candles = hist_after_sh[hist_after_sh['Close'] > last_sh.sh]
         
         if not bos_up_candles.empty:
             first_bos_candle = bos_up_candles.iloc[0]
@@ -195,7 +207,7 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
                 last_bearish_cluster = bearish_candles.iloc[-cluster_size:]
                 ob_data['bullish_ob_low'] = last_bearish_cluster['Low'].min()
                 ob_data['bullish_ob_high'] = last_bearish_cluster['High'].max()
-                logging.info(f"[{ticker}] Found Bullish BOS at {first_bos_candle.name}. OB Zone: {ob_data['bullish_ob_low']:.2f}-{ob_data['bullish_ob_high']:.2f}")
+                logging.info(f"[{ticker}] Found Bullish BOS at {first_bos_candle.name.date()}. OB Zone: {ob_data['bullish_ob_low']:.2f}-{ob_data['bullish_ob_high']:.2f}")
 
                 # --- 4. Check Bullish OB Validation ---
                 history_after_bos = hist_df.loc[first_bos_candle.name:].iloc[1:]
@@ -223,7 +235,8 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
 
         # --- 5. Find Most Recent Bearish OB (BOS Down) ---
         # Look for a close *below* the last swing low
-        bos_down_candles = hist_df.loc[last_sl.name:][hist_df['Close'] < last_sl.sl]
+        hist_after_sl = hist_df.loc[last_sl.name:]
+        bos_down_candles = hist_after_sl[hist_after_sl['Close'] < last_sl.sl]
         
         if not bos_down_candles.empty:
             first_bos_candle = bos_down_candles.iloc[0]
@@ -236,7 +249,7 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
                 last_bullish_cluster = bullish_candles.iloc[-cluster_size:]
                 ob_data['bearish_ob_low'] = last_bullish_cluster['Low'].min()
                 ob_data['bearish_ob_high'] = last_bullish_cluster['High'].max()
-                logging.info(f"[{ticker}] Found Bearish BOS at {first_bos_candle.name}. OB Zone: {ob_data['bearish_ob_low']:.2f}-{ob_data['bearish_ob_high']:.2f}")
+                logging.info(f"[{ticker}] Found Bearish BOS at {first_bos_candle.name.date()}. OB Zone: {ob_data['bearish_ob_low']:.2f}-{ob_data['bearish_ob_high']:.2f}")
 
                 # --- 6. Check Bearish OB Validation ---
                 history_after_bos = hist_df.loc[first_bos_candle.name:].iloc[1:]
