@@ -27,13 +27,21 @@
         "MACD_LONG_SPAN": 26,
         "MACD_SIGNAL_SPAN": 9,
         "ADX_WINDOW": 14,
-        "ATR_WINDOW": 14
+        "ATR_WINDOW": 14,
+        "SMC_ORDER_BLOCKS": {
+            "LOOKBACK_PERIOD": 252,
+            "PIVOT_BARS": 5,
+            "CLUSTER_SIZE": 2,
+            "VALIDATION_LOOKBACK": 10,
+            "ENTRY_PROXIMITY_PERCENT": 2.0
+        }
     },
-   "RISK_MANAGEMENT": {
+    "RISK_MANAGEMENT": {
         "ATR_STOP_LOSS_MULTIPLIER": 1.5,
         "ATR_TAKE_PROFIT_MULTIPLIER": 3.0,
         "MAX_POSITION_PERCENTAGE": 0.10,
-        "RISK_PER_TRADE_AMOUNT": 50 
+        "RISK_PER_TRADE_AMOUNT": 50,
+        "USE_CUT_LOSS_FILTER": true
     },
     "STATISTICAL": {
         "WINSORIZE_LIMIT": 0.05,
