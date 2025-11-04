@@ -16,8 +16,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.stats.mstats import winsorize
-import pytz # <-- IMPORT FOR TIMEZONE
-import pickle # <-- ⭐️ ADD THIS IMPORT
+import pytz 
+import pickle 
 
 # --- ⭐️ 1. Set Page Configuration FIRST ⭐️ ---
 st.set_page_config(
@@ -39,7 +39,6 @@ try:
         load_config,
         fetch_spus_tickers,
         process_ticker
-        # All other functions are now integrated or deprecated
     )
 except ImportError as e:
     st.error(f"Error: Failed to import 'spus.py'. Details: {e}")
@@ -59,7 +58,7 @@ except ImportError:
     REPORTLAB_AVAILABLE = False
     logging.warning("Module 'reportlab' not found. PDF report generation will be disabled.")
 
-# --- ⭐️ 2. Custom CSS (Unchanged from original) ⭐️ ---
+# --- ⭐️ 2. Custom CSS (Modified) ⭐️ ---
 def load_css():
     """Injects custom CSS for a modern, minimal, card-based theme."""
     st.markdown(f"""
@@ -82,27 +81,49 @@ def load_css():
         [data-testid="stSidebar"] .stButton > button, [data-testid="stSidebar"] .stDownloadButton > button {{
             width: 100%; border-radius: 8px; font-weight: 600;
         }}
-        [data-testid="stTabs"] button[role="tab"] {{
-            border-radius: 8px 8px 0 0; padding: 10px 15px; font-weight: 500;
+        
+        /* --- ⭐️ MODIFIED: Radio-to-Tabs styling ⭐️ --- */
+        [data-testid="stRadio"] > label[data-baseweb="radio"] {{
+            display: none; /* Hides the "Navigation:" label */
         }}
-        [data-testid="stTabContent"] {{
+        [data-testid="stRadio"] > div[role="radiogroup"] {{
+            display: flex;
+            flex-direction: row;
+            border-bottom: 2px solid var(--gray-800);
+            margin-bottom: 1.5rem;
+            width: 100%;
+        }}
+        [data-testid="stRadio"] input[type="radio"] {{
+            display: none; /* Hide the actual radio button */
+        }}
+        [data-testid="stRadio"] label[data-baseweb="radio"] > div:first-child {{
+            /* This is the container for the radio button's text */
+            padding: 10px 15px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 2px solid transparent;
+            border-bottom: none;
+            margin-bottom: -2px; /* Pulls the bottom border up */
+            transition: all 0.2s ease;
+            width: 100%;
+            text-align: center;
+        }}
+        /* The selected "tab" */
+        [data-testid="stRadio"] input[type="radio"]:checked + div {{
+            border-color: var(--gray-800);
+            border-bottom-color: var(--secondary-background-color); /* Hides the bottom border */
+            border-radius: 8px 8px 0 0;
             background-color: var(--secondary-background-color);
-            border: 1px solid var(--gray-800); border-top: none;
-            padding: 1.5rem; border-radius: 0 0 8px 8px;
+            color: var(--primary);
+            font-weight: 600;
         }}
-        [data-testid="stVerticalBlock"]:nth-child(1) [data-testid="stButton"] button {{
-            border: 1px solid var(--gray-800); font-weight: 500;
-            text-align: left; padding: 0.5rem 0.75rem;
-            transition: all 0.1s ease-in-out; border-radius: 8px;
-            margin-bottom: 4px;
+        /* Hover effect */
+        [data-testid="stRadio"] input[type="radio"]:not(:checked) + div:hover {{
+            background-color: var(--gray-900);
+            border-radius: 8px 8px 0 0;
         }}
-        [data-testid="stVerticalBlock"]:nth-child(1) [data-testid="stButton"] button[kind="secondary"]:hover {{
-            border-color: var(--primary); color: var(--primary);
-        }}
-        [data-testid="stVerticalBlock"]:nth-child(1) [data-testid="stButton"] button[kind="primary"] {{
-            border-color: #D30000; background-color: #D30000;
-            color: white; font-weight: 600;
-        }}
+        /* --- ⭐️ END OF MODIFICATION ⭐️ --- */
+        
         [data-testid="stMetric"] {{
             background-color: var(--background-color);
             border: 1px solid var(--gray-800); border-radius: 8px;
@@ -112,7 +133,7 @@ def load_css():
     """, unsafe_allow_html=True)
 
 
-# --- ⭐️ 3. Core Analysis Logic (Modularized) ⭐️ ---
+# --- ⭐️ 3. Core Analysis Logic (MODIFIED - Moved to Global Scope) ⭐️ ---
 
 def calculate_robust_zscore_grouped(group_series):
     """Applies robust Z-score (MAD) to a pandas group."""
@@ -120,7 +141,6 @@ def calculate_robust_zscore_grouped(group_series):
     median = series.median()
     mad = (series - median).abs().median()
     if mad == 0:
-        # Fallback to standard Z-score if MAD is zero
         std = series.std()
         if std == 0 or pd.isna(std):
             return pd.Series(0.0, index=group_series.index)
@@ -142,7 +162,6 @@ def calculate_all_z_scores(df, config):
     win_limit = stat_config.get('WINSORIZE_LIMIT', 0.05)
     min_sector_size = stat_config.get('MIN_SECTOR_SIZE_FOR_MEDIAN', 5)
 
-    # Get sector counts and identify small sectors
     sector_counts = df_analysis['Sector'].value_counts()
     small_sectors = sector_counts[sector_counts < min_sector_size].index
     logging.info(f"Small sectors (<{min_sector_size} stocks) found: {list(small_sectors)}. Global medians will be used.")
@@ -151,51 +170,37 @@ def calculate_all_z_scores(df, config):
     for factor in factor_defs.keys():
         all_components.extend(factor_defs[factor]['components'])
     
-    # 1. Pre-process all components (Winsorize, Handle Inversions, Calculate Ratios)
     for comp in all_components:
         col = comp['name']
         if col not in df_analysis.columns:
             logging.warning(f"Factor component '{col}' not found in data. Skipping.")
             continue
             
-        # A. Winsorize/Clip outliers
         df_analysis[col] = pd.to_numeric(df_analysis[col], errors='coerce')
-        # Use clip for robustness against extreme NaNs/Infs
         lower = df_analysis[col].quantile(win_limit)
         upper = df_analysis[col].quantile(1 - win_limit)
         if pd.notna(lower) and pd.notna(upper) and lower < upper:
             df_analysis[col] = df_analysis[col].clip(lower, upper)
         
-        # B. Handle inversions (e.g., P/E -> E/P) or ratios
-        # This implementation calculates Z-score on relative ratio (Stock/Sector)
-        # which is simpler than inverting.
-        
-        # C. Calculate Sector/Global Medians
         global_median = df_analysis[col].median()
-        if global_median == 0: global_median = 1e-6 # Avoid zero division
+        if global_median == 0: global_median = 1e-6 
         
         sector_medians = df_analysis.groupby('Sector')[col].median()
-        sector_medians.loc[small_sectors] = global_median # Replace small sectors
-        sector_medians = sector_medians.fillna(global_median) # Fill any NaN sectors
-        sector_medians[sector_medians == 0] = global_median # Avoid zero division
+        sector_medians.loc[small_sectors] = global_median
+        sector_medians = sector_medians.fillna(global_median)
+        sector_medians[sector_medians == 0] = global_median
         
         df_analysis[f"{col}_Sector_Median"] = df_analysis['Sector'].map(sector_medians)
-        
-        # D. Calculate Relative Ratio (Stock / Sector Median)
-        # We Z-score this ratio. A ratio > 1 is "better" if high_is_good=True
         df_analysis[f"{col}_Rel_Ratio"] = df_analysis[col] / df_analysis[f"{col}_Sector_Median"]
         
-        # E. Calculate Z-Score for the relative ratio
         z_col_name = f"Z_{col}"
         df_analysis[z_col_name] = df_analysis.groupby('Sector')[f"{col}_Rel_Ratio"].transform(calculate_robust_zscore_grouped)
         
-        # F. Adjust Z-Score based on 'high_is_good'
         if not comp['high_is_good']:
             df_analysis[z_col_name] = df_analysis[z_col_name] * -1.0
             
-        df_analysis[z_col_name] = df_analysis[z_col_name].fillna(0) # Final fill
+        df_analysis[z_col_name] = df_analysis[z_col_name].fillna(0)
 
-    # 2. Combine components into final factor Z-Scores
     logging.info("Combining components into final Z-Scores...")
     for factor, details in factor_defs.items():
         z_cols_to_average = [f"Z_{c['name']}" for c in details['components'] if f"Z_{c['name']}" in df_analysis.columns]
@@ -207,7 +212,6 @@ def calculate_all_z_scores(df, config):
     return df_analysis
 
 
-# --- ⭐️⭐️ FUNCTION REPLACED WITH CACHING LOGIC ⭐️⭐️ ---
 def generate_quant_report(CONFIG, progress_callback=None):
     """
     Core logic, decoupled from Streamlit.
@@ -241,7 +245,6 @@ def generate_quant_report(CONFIG, progress_callback=None):
     MAX_WORKERS = CONFIG.get('MAX_CONCURRENT_WORKERS', 10)
     report_progress(0.1, f"(2/7) Checking cache for {len(ticker_symbols)} tickers...")
 
-    # --- ⭐️ CACHE LOGIC START ⭐️ ---
     CACHE_DIR = os.path.join(BASE_DIR, "cache")
     os.makedirs(CACHE_DIR, exist_ok=True)
     CACHE_TTL_SECONDS = 6 * 3600 # 6 hours
@@ -258,54 +261,45 @@ def generate_quant_report(CONFIG, progress_callback=None):
             try:
                 cache_mod_time = os.path.getmtime(cache_path)
                 if (current_time - cache_mod_time) < CACHE_TTL_SECONDS:
-                    # Cache is valid, load it
                     with open(cache_path, 'rb') as f:
                         result = pickle.load(f)
                     
                     if result.get('success', False):
                         if 'hist_df' in result:
-                            # Pop hist_df to all_histories, add the rest to results_list
                             all_histories[ticker] = result.pop('hist_df')
                         results_list.append(result)
-                        continue # Move to the next ticker
+                        continue 
             except Exception as e:
                 logging.warning(f"Failed to load cache for {ticker}, will re-fetch: {e}")
                 
-        # If cache is invalid or doesn't exist, add to fetch list
         tickers_to_fetch.append(ticker)
     
     cached_count = len(results_list)
     report_progress(0.15, f"(2/7) Loaded {cached_count} tickers from cache. Fetching {len(tickers_to_fetch)} new tickers...")
-    # --- ⭐️ CACHE LOGIC END ⭐️ ---
     
     processed_count = 0
     total_to_fetch = len(tickers_to_fetch)
     start_time = time.time()
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        # Submit only the tickers that need fetching
         future_to_ticker = {executor.submit(process_ticker, ticker): ticker for ticker in tickers_to_fetch}
         
         for future in as_completed(future_to_ticker):
             ticker = future_to_ticker[future]
             try:
-                result = future.result(timeout=60) # 60s timeout per ticker
+                result = future.result(timeout=60) 
                 
-                # --- ⭐️ CACHE SAVE LOGIC START ⭐️ ---
                 if result.get('success', False):
                     cache_path = os.path.join(CACHE_DIR, f"{ticker}.pkl")
                     try:
-                        # Save the *entire* result (including hist_df) to pickle
                         with open(cache_path, 'wb') as f:
                             pickle.dump(result, f)
                     except Exception as e:
                         logging.warning(f"Failed to save cache for {ticker}: {e}")
                     
-                    # Now pop hist_df and add to lists for this session
                     if 'hist_df' in result:
                         all_histories[ticker] = result.pop('hist_df') 
                     results_list.append(result)
-                # --- ⭐️ CACHE SAVE LOGIC END ⭐️ ---
                 
                 else:
                     logging.error(f"Failed to process {ticker}: {result.get('error', 'Unknown error')}")
@@ -314,12 +308,11 @@ def generate_quant_report(CONFIG, progress_callback=None):
             
             processed_count += 1
             if total_to_fetch > 0:
-                percent_done = 0.15 + (0.55 * (processed_count / total_to_fetch)) # Adjusted progress bar math
+                percent_done = 0.15 + (0.55 * (processed_count / total_to_fetch)) 
                 report_progress(percent_done, f"(2/7) Processing: {ticker} ({processed_count}/{total_to_fetch})")
 
     end_time = time.time()
     report_progress(0.7, f"(3/7) Data fetch complete. Time taken: {end_time - start_time:.2f}s")
-    # --- ⭐️⭐️ END OF REPLACED FUNCTION ⭐️⭐️ ---
 
     if not results_list:
         report_progress(1.0, "Error: No data successfully processed. Analysis cancelled.")
@@ -328,11 +321,11 @@ def generate_quant_report(CONFIG, progress_callback=None):
     results_df = pd.DataFrame(results_list)
     results_df.set_index('ticker', inplace=True)
     
-    # --- 3. Risk Management Calcs ---
     report_progress(0.75, "(4/7) Risk metrics calculated in spus.py.")
     
     # --- 4. Factor Z-Score Calculation ---
     report_progress(0.8, "(5/7) Calculating robust Z-Scores...")
+    # --- ⭐️ MODIFIED: Calls the global function ⭐️ ---
     results_df = calculate_all_z_scores(results_df, CONFIG)
     
     # --- 5. Save Reports (Excel, PDF, CSV) ---
@@ -340,7 +333,6 @@ def generate_quant_report(CONFIG, progress_callback=None):
     
     results_df.sort_values(by='Z_Value', ascending=False, inplace=True)
 
-    # Column name mapping for display
     results_df_display = results_df.rename(columns={
         'last_price': 'Last Price', 'Sector': 'Sector', 'marketCap': 'Market Cap',
         'forwardPE': 'Forward P/E', 'priceToBook': 'P/B Ratio', 'grahamValuation': 'Valuation (Graham)',
@@ -350,23 +342,20 @@ def generate_quant_report(CONFIG, progress_callback=None):
         'Stop Loss Price': 'Stop Loss', 'Take Profit Price': 'Take Profit'
     })
     
-    # Format percentages for display
     pct_cols = ['ROE (%)', 'Profit Margin (%)', 'Momentum (12M %)', 'Risk % (to Stop)']
     for col in pct_cols:
         if col in results_df_display.columns:
             results_df_display[col] = results_df_display[col] * 100
 
-    # Create data sheets for Excel/PDF
     data_sheets = {
         'Top 20 (By Value)': results_df_display.sort_values(by='Z_Value', ascending=False).head(20),
         'Top 20 (By Momentum)': results_df_display.sort_values(by='Z_Momentum', ascending=False).head(20),
         'Top 20 (By Quality)': results_df_display.sort_values(by='Z_Quality', ascending=False).head(20),
         'Top Bullish Technicals': results_df_display.sort_values(by='Z_Technical', ascending=False).head(20),
         'Top Undervalued (Graham)': results_df_display[results_df_display['Valuation (Graham)'] == 'Undervalued (Graham)'].sort_values(by='Z_Value', ascending=False).head(20),
-        'All Results (Raw)': results_df # Full raw data
+        'All Results (Raw)': results_df
     }
 
-    # Save Excel
     excel_file_path = os.path.join(BASE_DIR, CONFIG['LOGGING']['EXCEL_FILE_PATH'])
     try:
         with pd.ExcelWriter(excel_file_path, engine='openpyxl') as writer:
@@ -376,10 +365,8 @@ def generate_quant_report(CONFIG, progress_callback=None):
     except Exception as e:
         logging.error(f"Failed to save Excel file: {e}")
 
-    # Save PDF
     if REPORTLAB_AVAILABLE:
         try:
-            # *** USE SAUDI TIMEZONE ***
             timestamp = datetime.now(SAUDI_TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
             base_pdf_path = os.path.splitext(excel_file_path)[0]
             pdf_file_path = f"{base_pdf_path}_{datetime.now(SAUDI_TZ).strftime('%Y%m%d_%H%M%S')}.pdf"
@@ -390,19 +377,16 @@ def generate_quant_report(CONFIG, progress_callback=None):
             
             elements = [Paragraph(f"SPUS Quant Report - {timestamp}", styles['h1'])]
             
-            # *** PDF TABLE FIT FIX: Select fewer columns ***
             pdf_cols = ['Last Price', 'Z_Value', 'Z_Momentum', 'Z_Quality', 'Risk/Reward Ratio']
             
             for sheet_name, df_sheet in data_sheets.items():
-                if sheet_name == 'All Results (Raw)': continue # Skip full report
+                if sheet_name == 'All Results (Raw)': continue 
                 
                 elements.append(Paragraph(sheet_name, styles['h2']))
                 
-                # Ensure selected columns exist
                 cols_to_show = [col for col in pdf_cols if col in df_sheet.columns]
                 df_pdf = df_sheet.head(15).reset_index()[['ticker'] + cols_to_show]
                 
-                # Format for PDF
                 df_pdf = df_pdf.fillna('N/A')
                 for col in cols_to_show:
                     if col in df_pdf.select_dtypes(include=[np.number]).columns:
@@ -410,7 +394,6 @@ def generate_quant_report(CONFIG, progress_callback=None):
                 
                 data = [df_pdf.columns.tolist()] + df_pdf.values.tolist()
                 
-                # Adjust column widths
                 col_widths = [1.2*inch] + [1*inch] * len(cols_to_show)
                 table = Table(data, hAlign='LEFT', colWidths=col_widths)
                 
@@ -433,11 +416,9 @@ def generate_quant_report(CONFIG, progress_callback=None):
         except Exception as e:
             logging.error(f"Failed to create PDF report: {e}")
     
-    # Save timestamped CSV result
     try:
         results_dir = os.path.join(BASE_DIR, CONFIG.get('LOGGING', {}).get('RESULTS_DIR', 'results_history'))
         os.makedirs(results_dir, exist_ok=True)
-        # *** USE SAUDI TIMEZONE ***
         timestamp_csv = datetime.now(SAUDI_TZ).strftime("%Y%m%d_%H%M%S")
         csv_path = os.path.join(results_dir, f"quant_results_{timestamp_csv}.csv")
         results_df.to_csv(csv_path)
@@ -447,20 +428,15 @@ def generate_quant_report(CONFIG, progress_callback=None):
 
     report_progress(1.0, "Analysis complete.")
     
-    # Return the raw df, histories, and display sheets
     return results_df, all_histories, data_sheets
 
 # --- ⭐️ 4. Streamlit UI Functions ⭐️ ---
 
-@st.cache_data(show_spinner=False, ttl=3600) # Cache for 1 hour
+@st.cache_data(show_spinner=False, ttl=3600) 
 def load_analysis_data(_config, run_timestamp):
     """
     Streamlit cache wrapper for the core analysis function.
-    The run_timestamp parameter is used to bust the cache when
-    the user clicks "Run Analysis".
     """
-    
-    # This context allows the core function to write to the Streamlit UI
     progress_bar = st.progress(0, text="Starting analysis...")
     status_text = st.empty()
     
@@ -479,7 +455,6 @@ def load_analysis_data(_config, run_timestamp):
         st.error("Analysis failed. Check logs.")
         return None, None, None, None
         
-    # *** USE SAUDI TIMEZONE ***
     return df, histories, sheets, datetime.now(SAUDI_TZ).timestamp()
 
 def get_latest_reports(excel_base_path):
@@ -510,7 +485,6 @@ def create_price_chart(hist_df, ticker):
                         vertical_spacing=0.03, subplot_titles=(f'{ticker} Price', 'MACD'), 
                         row_width=[0.2, 0.7])
 
-    # Price Chart (Row 1)
     fig.add_trace(go.Candlestick(x=hist_df.index,
                                 open=hist_df['Open'],
                                 high=hist_df['High'],
@@ -527,7 +501,6 @@ def create_price_chart(hist_df, ticker):
                              line=dict(color='blue', width=1), name=f'SMA {cfg["LONG_MA_WINDOW"]}'),
                   row=1, col=1)
 
-    # MACD Chart (Row 2)
     fig.add_trace(go.Bar(x=hist_df.index, y=hist_df[macd_h_col], 
                          name='Histogram',
                          marker_color=np.where(hist_df[macd_h_col] < 0, 'red', 'green')),
@@ -575,7 +548,7 @@ def create_radar_chart(ticker_data, factor_cols):
         polar=dict(
             radialaxis=dict(
                 visible=True,
-                range=[min(-2, min(values)-0.5), max(2, max(values)+0.5)] # Dynamic range
+                range=[min(-2, min(values)-0.5), max(2, max(values)+0.5)] 
             )
         ),
         title=f"Factor Profile for {ticker_data.name}",
@@ -583,21 +556,17 @@ def create_radar_chart(ticker_data, factor_cols):
     )
     return fig
 
-# --- ⭐️ NEW CODE START ⭐️ ---
 def display_buy_signal_checklist(ticker_data):
     """
     Displays a 4-step checklist on the Ticker Deep Dive tab,
     showing which buy criteria are met.
     """
     
-    # --- Define Thresholds (based on the guide's examples) ---
     SCORE_THRESHOLD = 1.0
-    FACTOR_Z_THRESHOLD = 0.5 # "Good" factor (guide says "high", we'll use > 0.5)
+    FACTOR_Z_THRESHOLD = 0.5 
     RSI_OVERBOUGHT = 70.0
     RR_RATIO_THRESHOLD = 1.5
 
-    # --- Check Each Step ---
-    
     # Step 1: Quant Score
     step1_met = False
     step1_text = f"**1. Quant Score > {SCORE_THRESHOLD}**"
@@ -630,7 +599,6 @@ def display_buy_signal_checklist(ticker_data):
     if trend_ok and rsi_ok and macd_ok:
         step3_met = True
     
-    # Build details with emojis
     trend_icon = "✅" if trend_ok else "❌"
     rsi_icon = "✅" if rsi_ok else "❌"
     macd_icon = "✅" if macd_ok else "❌"
@@ -649,7 +617,6 @@ def display_buy_signal_checklist(ticker_data):
         step4_met = True
     step4_details = f"Ratio is {rr_ratio:.2f}"
     
-    # --- Display in Columns ---
     st.subheader("Buy Signal Checklist")
     cols = st.columns(4)
     
@@ -663,10 +630,8 @@ def display_buy_signal_checklist(ticker_data):
     for i, (met, text, details) in enumerate(criteria):
         with cols[i]:
             icon = "✅" if met else "❌"
-            # Use st.metric for a "card" look
             st.markdown(f"**{icon} {text}**")
-            st.markdown(details, unsafe_allow_html=True) # For the <br> in step 3
-# --- ⭐️ NEW CODE END ⭐️ ---
+            st.markdown(details, unsafe_allow_html=True)
 
 
 # --- ⭐️ 5. Main Streamlit Application ⭐️ ---
@@ -677,39 +642,35 @@ def main():
     if 'selected_ticker' not in st.session_state:
         st.session_state.selected_ticker = None
     if 'run_timestamp' not in st.session_state:
-        # This key triggers the first run
         st.session_state.run_timestamp = time.time() 
+    # --- ⭐️ MODIFIED ⭐️ ---
+    if 'active_tab' not in st.session_state:
+        st.session_state.active_tab = "🏆 Quant Rankings"
     
-    # --- Load CSS ---
     load_css()
     
-    # --- Load Config ---
-    global CONFIG # Make CONFIG globally available in main()
+    global CONFIG 
     CONFIG = load_config('config.json')
     if CONFIG is None:
         st.error("FATAL: config.json not found. App cannot start.")
         st.stop()
 
-    # --- Setup Logging ---
     log_file_path = os.path.join(BASE_DIR, CONFIG.get('LOGGING', {}).get('LOG_FILE_PATH', 'spus_analysis.log'))
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(log_file_path, mode='a'),
-            logging.StreamHandler() # Also log to console
+            logging.StreamHandler()
         ]
     )
 
     # --- Sidebar ---
     with st.sidebar:
-        # --- ⭐️⭐️ CODE MODIFIED START ⭐️⭐️ ---
-        # Replaced SP-Funds logo with user's logo.jpg
         try:
             st.image("logo.jpg", width=200)
         except Exception as e:
             st.warning(f"Could not load logo.jpg: {e}")
-        # --- ⭐️⭐️ CODE MODIFIED END ⭐️⭐️ ---
         
         st.title("SPUS Quant Analyzer")
         st.markdown("Research-Grade Multi-Factor Analysis")
@@ -718,43 +679,85 @@ def main():
         st.subheader("Controls")
         if st.button("🔄 Run Full Analysis", type="primary"):
             st.session_state.selected_ticker = None
-            # Update timestamp to bust the cache
             st.session_state.run_timestamp = time.time() 
+            st.session_state.active_tab = "🏆 Quant Rankings"
+            # --- ⭐️ MODIFIED ⭐️ ---
+            if 'raw_df' in st.session_state:
+                del st.session_state['raw_df']
             st.rerun()
         
+        # --- ⭐️ MODIFIED: Stock Analyzer Section ⭐️ ---
+        st.divider()
+        st.subheader("Stock Analyzer")
+        new_ticker = st.text_input("Analyze Single Ticker:", placeholder="e.g., MSFT").upper().strip()
+        
+        if st.button("Analyze and Deep Dive"):
+            if new_ticker:
+                # Ensure data is loaded into session state first
+                if 'raw_df' not in st.session_state:
+                    # This check is needed in case the app just started
+                    # We'll trigger a rerun, which will populate st.session_state.raw_df
+                    st.warning("Priming data... please click 'Analyze' again.")
+                    st.rerun() 
+                elif new_ticker in st.session_state.raw_df.index:
+                    st.success(f"'{new_ticker}' is already loaded.")
+                    st.session_state.selected_ticker = new_ticker
+                    st.session_state.active_tab = "🔬 Ticker Deep Dive"
+                    st.rerun()
+                else:
+                    with st.spinner(f"Processing data for {new_ticker}..."):
+                        try:
+                            result = process_ticker(new_ticker)
+                            
+                            if result and result.get('success', False):
+                                new_hist_df = result.pop('hist_df', None)
+                                if new_hist_df is not None:
+                                    st.session_state.all_histories[new_ticker] = new_hist_df
+                                
+                                new_ticker_df = pd.DataFrame([result])
+                                new_ticker_df.set_index('ticker', inplace=True)
+                                
+                                st.session_state.raw_df = pd.concat([st.session_state.raw_df, new_ticker_df])
+                                
+                                st.info(f"Re-calculating Z-Scores for {len(st.session_state.raw_df)} stocks...")
+                                # --- ⭐️ MODIFIED: Calls global function ⭐️ ---
+                                st.session_state.raw_df = calculate_all_z_scores(st.session_state.raw_df, CONFIG)
+                                
+                                st.success(f"Successfully added '{new_ticker}'.")
+                                st.session_state.selected_ticker = new_ticker
+                                st.session_state.active_tab = "🔬 Ticker Deep Dive"
+                                st.rerun()
+                                
+                            else:
+                                st.error(f"Failed to fetch data for {new_ticker}. Error: {result.get('error', 'Unknown')}")
+                        except Exception as e:
+                            st.error(f"An exception occurred while processing {new_ticker}: {e}")
+            else:
+                st.warning("Please enter a ticker symbol.")
+        
+        st.divider()
+        # --- ⭐️ END OF MODIFICATION ⭐️ ---
+
         default_weights = CONFIG.get('DEFAULT_FACTOR_WEIGHTS', {
             "Value": 0.20, "Momentum": 0.20, "Quality": 0.20,
             "Size": 0.10, "LowVolatility": 0.15, "Technical": 0.15
         })
         
-        # --- ⭐️⭐️ CODE MODIFIED START ⭐️⭐️ ---
-        # Define the callback function first
         def callback_reset_weights():
-            """
-            This function is called when the reset button is clicked.
-            It deletes all factor weight keys from session state.
-            """
             for factor in default_weights.keys():
                 key_to_del = f"weight_{factor}" 
                 if key_to_del in st.session_state:
                     del st.session_state[key_to_del]
 
-        # Use the on_click callback in the button
         st.button("Reset Factor Weights", on_click=callback_reset_weights)
         
-        # REMOVED the old `if st.button(...)` logic
-        # --- ⭐️⭐️ CODE MODIFIED END ⭐️⭐️ ---
-
-        # --- 7. UI: Factor Weight Sliders ---
         st.subheader("Factor Weights")
         st.info("Adjust weights to re-rank stocks. Weights will be normalized.")
         
         weights = {}
         for factor, default in default_weights.items():
-            # *** ADDED KEY TO SLIDERS FOR RESET TO WORK ***
             weights[factor] = st.slider(factor, 0.0, 1.0, default, 0.05, key=f"weight_{factor}")
             
-        # Normalize weights
         total_weight = sum(weights.values())
         norm_weights = {f: (w / total_weight) if total_weight > 0 else 0 for f, w in weights.items()}
         
@@ -764,7 +767,6 @@ def main():
         
         st.divider()
 
-        # --- Download Buttons ---
         st.subheader("Downloads")
         excel_path, pdf_path = get_latest_reports(os.path.join(BASE_DIR, CONFIG['LOGGING']['EXCEL_FILE_PATH']))
         
@@ -791,28 +793,38 @@ def main():
         st.divider()
         st.info("Analysis data is cached for 1 hour. Click 'Run' for fresh data.")
 
-        # --- ⭐️ Logo was moved to the top ⭐️ ---
-
 
     # --- Main Page ---
     st.title("SPUS Quantitative Dashboard")
     
-    # --- Load Data (from cache or new run) ---
-    raw_df, all_histories, data_sheets, last_run_time = load_analysis_data(CONFIG, st.session_state.run_timestamp)
+    # --- ⭐️ MODIFIED: Load Data into Session State ⭐️ ---
     
-    if raw_df is None:
-        st.error("Analysis failed to produce data.")
+    base_raw_df, base_histories, base_sheets, base_last_run_time = load_analysis_data(CONFIG, st.session_state.run_timestamp)
+    
+    if 'raw_df' not in st.session_state or st.session_state.get('base_run_timestamp') != st.session_state.run_timestamp:
+        if base_raw_df is None:
+            st.error("Analysis failed to produce base data. App cannot continue.")
+            st.stop()
+        
+        st.session_state.raw_df = base_raw_df.copy()
+        st.session_state.all_histories = base_histories.copy()
+        st.session_state.data_sheets = base_sheets
+        st.session_state.last_run_time = base_last_run_time
+        st.session_state.base_run_timestamp = st.session_state.run_timestamp
+    
+    raw_df = st.session_state.raw_df
+    all_histories = st.session_state.all_histories
+    last_run_time = st.session_state.last_run_time
+    
+    if raw_df is None or raw_df.empty:
+        st.error("No data available in session state.")
         st.stop()
         
-    # *** USE SAUDI TIMEZONE ***
     st.success(f"Data loaded from analysis run at: {datetime.fromtimestamp(last_run_time, SAUDI_TZ).strftime('%Y-%m-%d %H:%M:%S %Z')}")
 
     # --- 7. UI: Dynamic Score Calculation & Filtering ---
-    
-    # 1. Calculate Final Quant Score dynamically
     df = raw_df.copy()
     
-    # *** Handle case where data loading might have failed and df is empty ***
     if df.empty:
         st.error("No stock data was successfully loaded. Check logs and data sources.")
         st.stop()
@@ -828,33 +840,27 @@ def main():
         else:
             logging.warning(f"Z-Score column {z_col} not found in dataframe.")
 
-    # 2. Apply Filters
     st.subheader("Filters")
     filt_col1, filt_col2 = st.columns(2)
     
-    # Sector Filter
     all_sectors = sorted(df['Sector'].unique())
     selected_sectors = filt_col1.multiselect("Filter by Sector:", all_sectors, default=all_sectors)
     
-    # *** ROBUST SLIDER LOGIC TO PREVENT CRASH ***
-    # Market Cap Filter
     if df.empty or 'marketCap' not in df.columns or df['marketCap'].isnull().all():
         filt_col2.info("No Market Cap data to filter.")
-        cap_range = (0.0, 0.0) # Dummy value
+        cap_range = (0.0, 0.0) 
     else:
         min_cap_val = float(df['marketCap'].min())
         max_cap_val = float(df['marketCap'].max())
 
         if min_cap_val == max_cap_val:
-            # Only one stock, or all have same cap. Create a small range.
-            min_cap = (min_cap_val / 1e9) * 0.9 # 10% below
-            max_cap = (max_cap_val / 1e9) * 1.1 # 10% above
+            min_cap = (min_cap_val / 1e9) * 0.9 
+            max_cap = (max_cap_val / 1e9) * 1.1 
             if min_cap < 0: min_cap = 0.0
         else:
             min_cap = min_cap_val / 1e9
             max_cap = max_cap_val / 1e9
         
-        # Ensure min is still less than max after calculations
         if min_cap >= max_cap:
             min_cap = max_cap - 1.0
             if min_cap < 0: min_cap = 0.0
@@ -867,44 +873,44 @@ def main():
             format="%.1f B"
         )
     
-    # *** ROBUST FILTERING LOGIC ***
-    # Apply filters
     filtered_df = df[
         (df['Sector'].isin(selected_sectors))
     ].copy()
 
-    # Conditionally apply market cap filter
     if not filtered_df.empty and 'marketCap' in filtered_df.columns and cap_range != (0.0, 0.0):
          filtered_df = filtered_df[
             (filtered_df['marketCap'].ge(cap_range[0] * 1e9)) &
             (filtered_df['marketCap'].le(cap_range[1] * 1e9))
          ]
     
-    # 3. Sort by new dynamic score
     filtered_df.sort_values(by='Final Quant Score', ascending=False, inplace=True)
     
     st.markdown(f"Displaying **{len(filtered_df)}** of **{len(df)}** total stocks matching filters.")
     st.divider()
 
-    # --- ⭐️ 6. UI: New Tab Structure ⭐️ ---
+    # --- ⭐️ MODIFIED: Replaced st.tabs with st.radio ⭐️ ---
     
     tab_list = ["🏆 Quant Rankings", "🔬 Ticker Deep Dive", "📈 Portfolio Analytics"]
-    tab_rank, tab_deep, tab_port = st.tabs(tab_list)
+    
+    selected_tab = st.radio(
+        "Navigation:",
+        tab_list,
+        key='active_tab',  # Binds the selection to st.session_state.active_tab
+        horizontal=True
+    )
     
     # --- Tab 1: Quant Rankings ---
-    with tab_rank:
+    if selected_tab == "🏆 Quant Rankings":
         st.header("🏆 Top Stocks by Final Quant Score")
-        st.info("Click a ticker to select it for the 'Ticker Deep Dive' tab.")
+        st.info("Click a ticker to select it and automatically move to the 'Ticker Deep Dive' tab.")
         
-        # --- ⭐️ NEW CODE START ⭐️ ---
         with st.expander("How to Find a Good Buy Signal (4-Step Guide)", expanded=False):
             st.markdown("""
                 This 4-step method helps you use the app to find suitable buying opportunities.
                 
                 ### 1. Check the Final Quant Score (The "What")
                 This is your primary signal. Look for stocks with a **high positive score** (e.g., > 1.0) 
-                in the ranked list below. This suggests the stock is "better than average" 
-                across the factors you selected.
+                in the ranked list below. 
                 
                 ### 2. Check the Factor Profile (The "Why")
                 Click a stock and go to the **"🔬 Ticker Deep Dive"** tab. Look at the 
@@ -925,9 +931,7 @@ def main():
                 * **Position Size (USD):** This calculates how much to invest for 
                     your pre-defined risk amount (e.g., $50).
             """)
-        # --- ⭐️ NEW CODE END ⭐️ ---
         
-        # --- Column layout (List + Details) ---
         rank_col1, rank_col2 = st.columns([1, 2])
         
         with rank_col1:
@@ -944,26 +948,25 @@ def main():
                         is_selected = (st.session_state.selected_ticker == ticker)
                         button_type = "primary" if is_selected else "secondary"
                         
+                        # --- ⭐️ MODIFIED: Button click now changes state and reruns ⭐️ ---
                         if st.button(label, key=f"rank_{ticker}", use_container_width=True, type=button_type):
                             st.session_state.selected_ticker = ticker
-                            st.success(f"Selected {ticker}. See 'Ticker Deep Dive' tab.")
+                            st.session_state.active_tab = "🔬 Ticker Deep Dive"
+                            st.rerun()
         
         with rank_col2:
             st.subheader("Top 20 Overview")
             
-            # Display columns for the table
             display_cols = [
                 'Last Price', 'Sector', 'Market Cap', 
                 'Final Quant Score', 
                 'Z_Value', 'Z_Momentum', 'Z_Quality', 
                 'Z_Size', 'Z_LowVolatility', 'Z_Technical',
                 'Risk/Reward Ratio',
-                'Position Size (USD)' # Added new col
+                'Position Size (USD)'
             ]
-            # Ensure columns exist
             display_cols = [c for c in display_cols if c in filtered_df.columns]
             
-            # Re-format Market Cap for display
             filtered_df_display = filtered_df.copy()
             if 'marketCap' in filtered_df_display.columns:
                 filtered_df_display['Market Cap'] = filtered_df_display['marketCap'] / 1e9
@@ -988,7 +991,7 @@ def main():
             )
 
     # --- Tab 2: Ticker Deep Dive ---
-    with tab_deep:
+    elif selected_tab == "🔬 Ticker Deep Dive":
         st.header("🔬 Ticker Deep Dive")
         
         selected_ticker = st.session_state.selected_ticker
@@ -998,146 +1001,31 @@ def main():
         elif filtered_df.empty:
             st.info("Go to the 'Quant Rankings' tab and click a ticker to see details.")
         elif selected_ticker not in filtered_df.index:
-            st.warning(f"Ticker '{selected_ticker}' is not in the currently filtered list. Clear filters or select a new ticker.")
+            try:
+                ticker_data = st.session_state.raw_df.loc[selected_ticker]
+                hist_data = all_histories.get(selected_ticker)
+                st.warning(f"'{selected_ticker}' is not in the currently filtered list, but analysis is available.")
+                # --- ⭐️ MODIFIED: Calls helper function ⭐️ ---
+                display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_cols, norm_weights, filtered_df)
+            except KeyError:
+                st.error(f"Ticker '{selected_ticker}' not found in any data. Try the 'Stock Analyzer'.")
+            
         else:
             ticker_data = filtered_df.loc[selected_ticker]
             hist_data = all_histories.get(selected_ticker)
-            
-            st.subheader(f"Analysis for: {selected_ticker}")
-
-            # --- ⭐️ NEW CODE START ⭐️ ---
-            # Add Previous/Next Buttons
-            try:
-                # Get the full list of tickers from the *filtered* dataframe
-                ticker_list = filtered_df.index.tolist()
-                current_index = ticker_list.index(selected_ticker)
-                
-                # Create columns for the buttons
-                prev_col, next_col, _ = st.columns([1, 1, 4]) # Keep buttons compact
-                
-                # Previous Button
-                is_first = (current_index == 0)
-                if prev_col.button("⬅️ Previous", use_container_width=True, disabled=is_first, key="prev_ticker"):
-                    st.session_state.selected_ticker = ticker_list[current_index - 1]
-                    st.rerun()
-                    
-                # Next Button
-                is_last = (current_index == len(ticker_list) - 1)
-                if next_col.button("Next ➡️", use_container_width=True, disabled=is_last, key="next_ticker"):
-                    st.session_state.selected_ticker = ticker_list[current_index + 1]
-                    st.rerun()
-
-            except ValueError:
-                # This might happen if the ticker is somehow not in the list, though the parent 'if' should prevent it.
-                st.error("Error finding ticker in the list for navigation.")
-            # --- ⭐️ NEW CODE END ⭐️ ---
-            
-            # --- ⭐️⭐️ NEW CHECKLIST SECTION START ⭐️⭐️ ---
-            # Call the new function here
-            display_buy_signal_checklist(ticker_data)
-            st.divider() # Add a divider after the checklist
-            # --- ⭐️⭐️ NEW CHECKLIST SECTION END ⭐️⭐️ ---
-
-            # *** ADD THIS WARNING DISPLAY ***
-            if pd.notna(ticker_data.get('data_warning')):
-                st.warning(f"⚠️ **Data Warning:** {ticker_data['data_warning']}")
-            # *** END OF NEW DISPLAY ***
-            
-            st.markdown(f"**Sector:** {ticker_data['Sector']} | **Data Source:** `{ticker_data['source']}`")
-            
-            # --- Key Metrics ---
-            kpi_cols = st.columns(4)
-            kpi_cols[0].metric("Final Quant Score", f"{ticker_data['Final Quant Score']:.3f}")
-            kpi_cols[1].metric("Last Price", f"${ticker_data['last_price']:.2f}")
-            kpi_cols[2].metric("Market Cap", f"${ticker_data['marketCap']/1e9:.1f} B")
-            kpi_cols[3].metric("Trend (50/200 MA)", ticker_data['Trend (50/200 Day MA)'])
-            
-            st.divider()
-            
-            # --- 6. Explainability & 7. UI Charts ---
-            chart_col1, chart_col2 = st.columns([2, 1])
-            
-            with chart_col1:
-                st.subheader("Price Chart & Technicals")
-                if hist_data is not None:
-                    price_chart = create_price_chart(hist_data, selected_ticker)
-                    st.plotly_chart(price_chart, use_container_width=True)
-                else:
-                    st.error("Historical data not found for this ticker.")
-                    
-            with chart_col2:
-                st.subheader("Factor Profile")
-                radar_chart = create_radar_chart(ticker_data, factor_z_cols)
-                st.plotly_chart(radar_chart, use_container_width=True)
-                
-                with st.expander("Factor Contribution Breakdown", expanded=True):
-                    for factor in norm_weights.keys():
-                        z_col = f"Z_{factor}"
-                        w_z_col = f"Weighted_{z_col}"
-                        st.metric(
-                            label=f"{factor} (Z-Score: {ticker_data[z_col]:.2f})",
-                            value=f"Contrib: {ticker_data[w_z_col]:.3f}",
-                            help=f"Weight: {norm_weights[factor]*100:.1f}%"
-                        )
-
-            st.divider()
-            
-            # --- Risk, Value & Position Sizing Metrics ---
-            st.subheader("Risk & Position Sizing")
-            risk_val_cols = st.columns(5) # Changed to 5 columns
-            
-            # 1. Stop Loss
-            sl_price = ticker_data['Stop Loss Price']
-            risk_pct = ticker_data['Risk % (to Stop)']
-            sl_display = f"${sl_price:.2f}" if pd.notna(sl_price) else "N/A"
-            risk_display = f"Risk %: {risk_pct:.1f}%" if pd.notna(risk_pct) else "N/A"
-            sl_method = ticker_data.get('SL_Method', 'N/A')
-            risk_val_cols[0].metric(f"Stop Loss ({sl_method})", sl_display, help=risk_display)
-
-            # 2. Take Profit (Fibonacci)
-            tp_price = ticker_data['Take Profit Price']
-            tp_display = f"${tp_price:.2f}" if pd.notna(tp_price) else "N/A"
-            risk_val_cols[1].metric("Take Profit (Fib 1.618)", tp_display)
-
-            # 3. Risk/Reward
-            rr_ratio = ticker_data['Risk/Reward Ratio']
-            rr_display = f"{rr_ratio:.2f}" if pd.notna(rr_ratio) else "N/A"
-            risk_val_cols[2].metric("Risk/Reward Ratio", rr_display)
-
-            # 4. Position Size (Shares)
-            pos_shares = ticker_data['Position Size (Shares)']
-            pos_display = f"{pos_shares:.0f} Shares" if pd.notna(pos_shares) else "N/A"
-            risk_usd = ticker_data.get('Risk Per Trade (USD)', 500)
-            risk_val_cols[3].metric("Position Size (Shares)", pos_display, help=f"Based on ${risk_usd:,.0f} risk")
-            
-            # 5. Position Size (USD)
-            pos_usd = ticker_data['Position Size (USD)']
-            pos_usd_display = f"${pos_usd:,.0f}" if pd.notna(pos_usd) else "N/A"
-            risk_val_cols[4].metric("Position Size (USD)", pos_usd_display, help="Shares * Last Price")
-
-            st.divider() # Add a divider before the next section
-            
-            # --- Graham Value Metric (moved to a new subheader) ---
-            st.subheader("Valuation")
-            val_col1, _, _ = st.columns(3) # Use columns to keep it compact
-            val_col1.metric("Valuation (Graham)", ticker_data['grahamValuation'])
-            
-            # --- Raw Data Expander ---
-            with st.expander("View All Raw Data for " + selected_ticker):
-                st.dataframe(ticker_data)
+            # --- ⭐️ MODIFIED: Calls helper function ⭐️ ---
+            display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_cols, norm_weights, filtered_df)
 
     # --- Tab 3: Portfolio Analytics ---
-    with tab_port:
+    elif selected_tab == "📈 Portfolio Analytics":
         st.header("📈 Portfolio-Level Analytics")
         
-        # Check if df is empty before grouping
         if filtered_df.empty:
             st.warning("No data to display. Adjust filters.")
         else:
             port_col1, port_col2 = st.columns(2)
             
             with port_col1:
-                # --- 4. Statistical Robustness: Correlation Heatmap ---
                 st.subheader("Factor Correlation Heatmap")
                 st.info("This shows if factors are redundant (highly correlated). Aim for low values.")
                 
@@ -1146,14 +1034,13 @@ def main():
                     corr_matrix,
                     text_auto=".2f",
                     aspect="auto",
-                    color_continuous_scale='RdBu_r', # Red-Blue
+                    color_continuous_scale='RdBu_r', 
                     zmin=-1, zmax=1,
                     title="Factor Z-Score Correlation Matrix"
                 )
                 st.plotly_chart(corr_heatmap, use_container_width=True)
                 
             with port_col2:
-                # --- 6. Explainability: Sector Heatmap ---
                 st.subheader("Sector Median Factor Strength")
                 st.info("This shows which factors are strongest/weakest for each sector.")
                 
@@ -1167,6 +1054,117 @@ def main():
                 )
                 st.plotly_chart(sector_heatmap, use_container_width=True)
             
+# --- ⭐️ NEW HELPER FUNCTION ⭐️ ---
+def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_cols, norm_weights, filtered_df):
+    """
+    Helper function to display the full Ticker Deep Dive page.
+    This avoids code duplication.
+    """
+    selected_ticker = ticker_data.name
+    st.subheader(f"Analysis for: {selected_ticker}")
+
+    # Add Previous/Next Buttons
+    try:
+        ticker_list = filtered_df.index.tolist() # Based on filtered list
+        current_index = ticker_list.index(selected_ticker)
+        prev_col, next_col, _ = st.columns([1, 1, 4])
+        
+        is_first = (current_index == 0)
+        if prev_col.button("⬅️ Previous", use_container_width=True, disabled=is_first, key="prev_ticker"):
+            st.session_state.selected_ticker = ticker_list[current_index - 1]
+            st.rerun()
+            
+        is_last = (current_index == len(ticker_list) - 1)
+        if next_col.button("Next ➡️", use_container_width=True, disabled=is_last, key="next_ticker"):
+            st.session_state.selected_ticker = ticker_list[current_index + 1]
+            st.rerun()
+
+    except ValueError:
+        st.info("Previous/Next navigation is only available for stocks in the filtered list.")
+
+    # Buy Signal Checklist
+    display_buy_signal_checklist(ticker_data)
+    st.divider()
+
+    if pd.notna(ticker_data.get('data_warning')):
+        st.warning(f"⚠️ **Data Warning:** {ticker_data['data_warning']}")
+    
+    st.markdown(f"**Sector:** {ticker_data['Sector']} | **Data Source:** `{ticker_data['source']}`")
+    
+    # Key Metrics
+    kpi_cols = st.columns(4)
+    kpi_cols[0].metric("Final Quant Score", f"{ticker_data['Final Quant Score']:.3f}")
+    kpi_cols[1].metric("Last Price", f"${ticker_data['last_price']:.2f}")
+    kpi_cols[2].metric("Market Cap", f"${ticker_data['marketCap']/1e9:.1f} B")
+    kpi_cols[3].metric("Trend (50/200 MA)", ticker_data['Trend (50/200 Day MA)'])
+    
+    st.divider()
+    
+    # Charts
+    chart_col1, chart_col2 = st.columns([2, 1])
+    with chart_col1:
+        st.subheader("Price Chart & Technicals")
+        if hist_data is not None:
+            price_chart = create_price_chart(hist_data, selected_ticker)
+            st.plotly_chart(price_chart, use_container_width=True)
+        else:
+            st.error("Historical data not found for this ticker.")
+            
+    with chart_col2:
+        st.subheader("Factor Profile")
+        radar_chart = create_radar_chart(ticker_data, factor_z_cols)
+        st.plotly_chart(radar_chart, use_container_width=True)
+        
+        with st.expander("Factor Contribution Breakdown", expanded=True):
+            for factor in norm_weights.keys():
+                z_col = f"Z_{factor}"
+                w_z_col = f"Weighted_{z_col}"
+                st.metric(
+                    label=f"{factor} (Z-Score: {ticker_data[z_col]:.2f})",
+                    value=f"Contrib: {ticker_data[w_z_col]:.3f}",
+                    help=f"Weight: {norm_weights[factor]*100:.1f}%"
+                )
+
+    st.divider()
+    
+    # Risk, Value & Position Sizing Metrics
+    st.subheader("Risk & Position Sizing")
+    risk_val_cols = st.columns(5)
+    
+    sl_price = ticker_data['Stop Loss Price']
+    risk_pct = ticker_data['Risk % (to Stop)']
+    sl_display = f"${sl_price:.2f}" if pd.notna(sl_price) else "N/A"
+    risk_display = f"Risk %: {risk_pct:.1f}%" if pd.notna(risk_pct) else "N/A"
+    sl_method = ticker_data.get('SL_Method', 'N/A')
+    risk_val_cols[0].metric(f"Stop Loss ({sl_method})", sl_display, help=risk_display)
+
+    tp_price = ticker_data['Take Profit Price']
+    tp_display = f"${tp_price:.2f}" if pd.notna(tp_price) else "N/A"
+    risk_val_cols[1].metric("Take Profit (Fib 1.618)", tp_display)
+
+    rr_ratio = ticker_data['Risk/Reward Ratio']
+    rr_display = f"{rr_ratio:.2f}" if pd.notna(rr_ratio) else "N/A"
+    risk_val_cols[2].metric("Risk/Reward Ratio", rr_display)
+
+    pos_shares = ticker_data['Position Size (Shares)']
+    pos_display = f"{pos_shares:.0f} Shares" if pd.notna(pos_shares) else "N/A"
+    risk_usd = ticker_data.get('Risk Per Trade (USD)', 500)
+    risk_val_cols[3].metric("Position Size (Shares)", pos_display, help=f"Based on ${risk_usd:,.0f} risk")
+    
+    pos_usd = ticker_data['Position Size (USD)']
+    pos_usd_display = f"${pos_usd:,.0f}" if pd.notna(pos_usd) else "N/A"
+    risk_val_cols[4].metric("Position Size (USD)", pos_usd_display, help="Shares * Last Price")
+
+    st.divider() 
+    
+    st.subheader("Valuation")
+    val_col1, _, _ = st.columns(3)
+    val_col1.metric("Valuation (Graham)", ticker_data['grahamValuation'])
+    
+    with st.expander("View All Raw Data for " + selected_ticker):
+        st.dataframe(ticker_data)
+# --- ⭐️ END OF NEW HELPER FUNCTION ⭐️ ---
+
 
 # --- ⭐️ 6. Scheduler Entry Point ---
 
@@ -1176,10 +1174,8 @@ def run_analysis_for_scheduler():
     Does NOT use Streamlit.
     """
     print("--- [SPUS SCHEDULER] ---")
-    # *** USE SAUDI TIMEZONE ***
     print(f"Starting scheduled analysis at {datetime.now(SAUDI_TZ)}...")
     
-    # Setup basic print logging for the scheduler
     def print_progress_callback(percent, text):
         print(f"[{percent*100:.0f}%] {text}")
     
@@ -1188,18 +1184,20 @@ def run_analysis_for_scheduler():
         print("FATAL: Could not load config.json. Exiting.")
         return
         
-    # Setup file logging for the scheduled run
     log_file_path = os.path.join(BASE_DIR, CONFIG.get('LOGGING', {}).get('LOG_FILE_PATH', 'spus_analysis.log'))
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(log_file_path, mode='a'),
-            logging.StreamHandler(sys.stdout) # Log to stdout for cron
+            logging.StreamHandler(sys.stdout)
         ]
     )
     
     try:
+        # --- ⭐️ MODIFIED: Calls global function ⭐️ ---
+        # Note: This is a change, but generate_quant_report ALSO calls it.
+        # This is fine.
         df, _, _ = generate_quant_report(CONFIG, print_progress_callback)
         if df is not None:
             print(f"Successfully generated report for {len(df)} tickers.")
