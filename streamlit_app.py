@@ -1136,7 +1136,7 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
         radar_chart = create_radar_chart(ticker_data, factor_z_cols)
         st.plotly_chart(radar_chart, use_container_width=True)
         
-        with st.expander("Factor Contribution Breakdown", expanded=True):
+        with st.expander("Factor Contribution Breakdown", expanded=False):
             for factor in norm_weights.keys():
                 z_col = f"Z_{factor}"
                 w_z_col = f"Weighted_{z_col}"
