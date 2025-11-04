@@ -1,13 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v17 (Research Grade)
+SPUS Quantitative Analyzer v18 (Institutional SMC Upgrade)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
-- Fetches a wide range of metrics for 6-factor modeling:
-  (Value, Momentum, Quality, Size, Low Volatility, Technical)
+- Fetches a wide range of metrics for 6-factor modeling.
 - Includes robust data fetching for tickers and fundamentals.
 - Modular functions to be called by analysis script.
-- ADDED: Order Block calculation.
+- REWORKED: find_order_blocks for SMC (BOS, Mitigation, Validation).
+- ADDED: 'entry_signal' filter based on proximity to validated OBs.
+- MODIFIED: Risk logic to use dynamic 'Final Stop Loss' comparing
+  ATR vs. 'Cut Loss' (last swing low).
 - ADDED: Last Dividend and News List fetching.
 - ADDED: pct_above_support metric for filtering.
 """
@@ -23,7 +25,7 @@ from datetime import datetime
 import json
 import numpy as np
 from bs4 import BeautifulSoup
-import random  # <-- Added for API key rotation
+import random
 
 # --- Define Base Directory ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -123,65 +125,152 @@ def fetch_spus_tickers_from_web(url="https://www.sp-funds.com/spus/"):
         logging.error(f"Error parsing HTML from {url}: {e}")
         return None
 
-# --- (This is a NEW function to add to spus.py) ---
-def find_order_blocks(hist_df, lookback=40):
+# --- (This is the NEW, REWRITTEN function) ---
+def find_order_blocks(hist_df_full, ticker="TICKER"):
     """
     Finds the most recent Bullish and Bearish Order Blocks based on
-    a simple "last opposing candle before high/low" logic.
+    Smart Money Concepts (SMC):
+    1. Find Swing Highs/Lows (Pivots).
+    2. Find the most recent Break of Structure (BOS) (close > SH or close < SL).
+    3. Identify the opposing candle cluster *before* the BOS as the Order Block.
+    4. Check if the OB was mitigated (touched) and then validated (bounced).
     
     Args:
-        hist_df (pd.DataFrame): The price history.
-        lookback (int): How many days back to look for the high/low.
+        hist_df_full (pd.DataFrame): The price history.
+        ticker (str): The ticker symbol (for logging).
 
     Returns:
-        dict: A dictionary with the OB price ranges.
+        dict: A dictionary with OB price ranges, validation status, and last swing points.
     """
-    if len(hist_df) < lookback:
-        return {'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan}
     
+    # --- 1. Initialize & Load Config ---
+    smc_config = CONFIG.get('TECHNICALS', {}).get('SMC_ORDER_BLOCKS', {})
+    lookback = smc_config.get('LOOKBACK_PERIOD', 252)
+    pivots_n = smc_config.get('PIVOT_BARS', 5)
+    cluster_size = smc_config.get('CLUSTER_SIZE', 2)
+    validation_lookback = smc_config.get('VALIDATION_LOOKBACK', 10)
+
+    # Base return object
+    ob_data = {
+        'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bullish_ob_validated': False,
+        'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': False,
+        'last_swing_low': np.nan, 'last_swing_high': np.nan
+    }
+
+    if len(hist_df_full) < lookback:
+        logging.warning(f"[{ticker}] Not enough history ({len(hist_df_full)} days) for SMC analysis (needs {lookback}).")
+        return ob_data
+
     try:
-        recent_hist = hist_df.iloc[-lookback:]
+        hist_df = hist_df_full.iloc[-lookback:].copy()
         
-        # --- Find Bullish OB (last red candle before 'lookback' high) ---
-        high_price = recent_hist['High'].max()
-        high_idx = recent_hist['High'].idxmax()
+        # --- 2. Find Swing Highs/Lows ---
+        hist_df['sh'] = hist_df.ta.pivothigh(left=pivots_n, right=pivots_n)
+        hist_df['sl'] = hist_df.ta.pivotlow(left=pivots_n, right=pivots_n)
         
-        # Get candles before the high
-        hist_before_high = recent_hist.loc[:high_idx] 
-        # Find last red candle
-        red_candles_before_high = hist_before_high[hist_before_high['Close'] < hist_before_high['Open']]
-        
-        if not red_candles_before_high.empty:
-            last_red_candle = red_candles_before_high.iloc[-1]
-            bullish_ob_low = last_red_candle['Low']
-            bullish_ob_high = last_red_candle['High']
-        else:
-            bullish_ob_low = np.nan
-            bullish_ob_high = np.nan
+        swing_highs = hist_df[hist_df['sh'].notna()]
+        swing_lows = hist_df[hist_df['sl'].notna()]
 
-        # --- Find Bearish OB (last green candle before 'lookback' low) ---
-        low_price = recent_hist['Low'].min()
-        low_idx = recent_hist['Low'].idxmin()
+        if swing_highs.empty or swing_lows.empty:
+            logging.warning(f"[{ticker}] No swing points found in the last {lookback} days.")
+            return ob_data
+            
+        last_sh = swing_highs.iloc[-1]
+        last_sl = swing_lows.iloc[-1]
+        ob_data['last_swing_low'] = last_sl.sl
+        ob_data['last_swing_high'] = last_sh.sh
 
-        # Get candles before the low
-        hist_before_low = recent_hist.loc[:low_idx]
-        # Find last green candle
-        green_candles_before_low = hist_before_low[hist_before_low['Close'] > hist_before_low['Open']]
+        # --- 3. Find Most Recent Bullish OB (BOS Up) ---
+        # Look for a close *above* the last swing high
+        bos_up_candles = hist_df.loc[last_sh.name:][hist_df['Close'] > last_sh.sh]
         
-        if not green_candles_before_low.empty:
-            last_green_candle = green_candles_before_low.iloc[-1]
-            bearish_ob_low = last_green_candle['Low'] # Note: Bearish OB range is High-to-Low
-            bearish_ob_high = last_green_candle['High']
-        else:
-            bearish_ob_low = np.nan
-            bearish_ob_high = np.nan
+        if not bos_up_candles.empty:
+            first_bos_candle = bos_up_candles.iloc[0]
+            
+            # Find the opposing (bearish) candle cluster *before* the BOS
+            candles_before_bos = hist_df.loc[:first_bos_candle.name].iloc[:-1]
+            bearish_candles = candles_before_bos[candles_before_bos['Close'] < candles_before_bos['Open']]
+            
+            if not bearish_candles.empty:
+                last_bearish_cluster = bearish_candles.iloc[-cluster_size:]
+                ob_data['bullish_ob_low'] = last_bearish_cluster['Low'].min()
+                ob_data['bullish_ob_high'] = last_bearish_cluster['High'].max()
+                logging.info(f"[{ticker}] Found Bullish BOS at {first_bos_candle.name}. OB Zone: {ob_data['bullish_ob_low']:.2f}-{ob_data['bullish_ob_high']:.2f}")
 
-        return {'bullish_ob_low': bullish_ob_low, 'bullish_ob_high': bullish_ob_high, 
-                'bearish_ob_low': bearish_ob_low, 'bearish_ob_high': bearish_ob_high}
+                # --- 4. Check Bullish OB Validation ---
+                history_after_bos = hist_df.loc[first_bos_candle.name:].iloc[1:]
+                if not history_after_bos.empty:
+                    # Check for mitigation (price returns to touch the OB)
+                    candles_that_touched = history_after_bos[history_after_bos['Low'] <= ob_data['bullish_ob_high']]
+                    
+                    if not candles_that_touched.empty:
+                        # Check for invalidation (price closes *through* the OB)
+                        invalidated = (candles_that_touched['Close'] < ob_data['bullish_ob_low']).any()
+                        
+                        if not invalidated:
+                            # Check for reaction/bounce (e.g., makes a new high after touch)
+                            first_touch_idx = candles_that_touched.index[0]
+                            reaction_candles = hist_df.loc[first_touch_idx:].iloc[1:validation_lookback+1]
+                            
+                            if not reaction_candles.empty:
+                                # A simple validation: price moves up significantly or makes a new high
+                                bounced = reaction_candles['High'].max() > first_bos_candle.High
+                                if bounced:
+                                    ob_data['bullish_ob_validated'] = True
+                                    logging.info(f"[{ticker}] Bullish OB was validated (mitigated and bounced).")
+                        else:
+                             logging.info(f"[{ticker}] Bullish OB was invalidated (price closed below zone).")
+
+        # --- 5. Find Most Recent Bearish OB (BOS Down) ---
+        # Look for a close *below* the last swing low
+        bos_down_candles = hist_df.loc[last_sl.name:][hist_df['Close'] < last_sl.sl]
+        
+        if not bos_down_candles.empty:
+            first_bos_candle = bos_down_candles.iloc[0]
+            
+            # Find the opposing (bullish) candle cluster *before* the BOS
+            candles_before_bos = hist_df.loc[:first_bos_candle.name].iloc[:-1]
+            bullish_candles = candles_before_bos[candles_before_bos['Close'] > candles_before_bos['Open']]
+            
+            if not bullish_candles.empty:
+                last_bullish_cluster = bullish_candles.iloc[-cluster_size:]
+                ob_data['bearish_ob_low'] = last_bullish_cluster['Low'].min()
+                ob_data['bearish_ob_high'] = last_bullish_cluster['High'].max()
+                logging.info(f"[{ticker}] Found Bearish BOS at {first_bos_candle.name}. OB Zone: {ob_data['bearish_ob_low']:.2f}-{ob_data['bearish_ob_high']:.2f}")
+
+                # --- 6. Check Bearish OB Validation ---
+                history_after_bos = hist_df.loc[first_bos_candle.name:].iloc[1:]
+                if not history_after_bos.empty:
+                    # Check for mitigation (price returns to touch the OB)
+                    candles_that_touched = history_after_bos[history_after_bos['High'] >= ob_data['bearish_ob_low']]
+                    
+                    if not candles_that_touched.empty:
+                        # Check for invalidation (price closes *through* the OB)
+                        invalidated = (candles_that_touched['Close'] > ob_data['bearish_ob_high']).any()
+                        
+                        if not invalidated:
+                            # Check for reaction/bounce (e.g., makes a new low after touch)
+                            first_touch_idx = candles_that_touched.index[0]
+                            reaction_candles = hist_df.loc[first_touch_idx:].iloc[1:validation_lookback+1]
+                            
+                            if not reaction_candles.empty:
+                                bounced = reaction_candles['Low'].min() < first_bos_candle.Low
+                                if bounced:
+                                    ob_data['bearish_ob_validated'] = True
+                                    logging.info(f"[{ticker}] Bearish OB was validated (mitigated and bounced).")
+                        else:
+                             logging.info(f"[{ticker}] Bearish OB was invalidated (price closed above zone).")
+
+        return ob_data
                 
     except Exception as e:
-        logging.warning(f"Error in find_order_blocks: {e}")
-        return {'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan}
+        logging.warning(f"[{ticker}] Error in find_order_blocks: {e}", exc_info=True)
+        # Return default structure on error
+        return {
+            'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bullish_ob_validated': False,
+            'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': False,
+            'last_swing_low': np.nan, 'last_swing_high': np.nan
+        }
 
 def fetch_spus_tickers():
     """
@@ -335,7 +424,7 @@ def parse_ticker_data(data, ticker_symbol):
     source = data['source']
     
     parsed = {'ticker': ticker_symbol, 'success': True, 'source': source}
-    parsed['data_warning'] = None # <-- ADD THIS LINE
+    parsed['data_warning'] = None
     
     try:
         # --- 0. Clean History & Get Last Price ---
@@ -541,12 +630,44 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['pct_above_support'] = np.nan
         # --- END OF NEW ---
         
-        # --- NEW: Calculate Order Blocks ---
-        ob_lookback = CONFIG.get('TECHNICALS', {}).get('OB_LOOKBACK_PERIOD', 40)
-        ob_data = find_order_blocks(hist, lookback=ob_lookback)
-        parsed.update(ob_data) # This adds all 4 keys (bullish_ob_low, etc.) to the 'parsed' dict
-        # --- END OF NEW ---
+        # --- MODIFIED: Calculate SMC Order Blocks ---
+        # The 'lookback' param is now handled inside the function via CONFIG
+        ob_data = find_order_blocks(hist, ticker=ticker_symbol)
+        parsed.update(ob_data) # This adds all keys (bullish_ob_low, etc.)
+        # --- END OF MODIFICATION ---
         
+        # --- NEW: Entry Signal Logic ---
+        smc_config = CONFIG.get('TECHNICALS', {}).get('SMC_ORDER_BLOCKS', {})
+        proximity_pct = smc_config.get('ENTRY_PROXIMITY_PERCENT', 2.0) / 100.0
+        entry_signal = "No Trade"
+        
+        bullish_ob_low = parsed.get('bullish_ob_low', np.nan)
+        bullish_ob_high = parsed.get('bullish_ob_high', np.nan)
+        bullish_ob_validated = parsed.get('bullish_ob_validated', False)
+        
+        bearish_ob_low = parsed.get('bearish_ob_low', np.nan)
+        bearish_ob_high = parsed.get('bearish_ob_high', np.nan)
+        bearish_ob_validated = parsed.get('bearish_ob_validated', False)
+
+        # Long Entry Logic
+        if bullish_ob_validated and pd.notna(bullish_ob_high) and pd.notna(bullish_ob_low):
+            # Price must be within the zone or X% above it
+            entry_zone_top = bullish_ob_high * (1 + proximity_pct)
+            if last_price >= bullish_ob_low and last_price <= entry_zone_top:
+                entry_signal = "Buy near Bullish OB"
+                logging.info(f"[{ticker_symbol}] Entry Signal: Price {last_price} is near validated Bullish OB ({bullish_ob_low:.2f}-{bullish_ob_high:.2f})")
+
+        # Short Entry Logic
+        elif bearish_ob_validated and pd.notna(bearish_ob_low) and pd.notna(bearish_ob_high):
+             # Price must be within the zone or X% below it
+            entry_zone_bottom = bearish_ob_low * (1 - proximity_pct)
+            if last_price <= bearish_ob_high and last_price >= entry_zone_bottom:
+                entry_signal = "Sell near Bearish OB"
+                logging.info(f"[{ticker_symbol}] Entry Signal: Price {last_price} is near validated Bearish OB ({bearish_ob_low:.2f}-{bearish_ob_high:.2f})")
+        
+        parsed['entry_signal'] = entry_signal
+        # --- END OF NEW ENTRY LOGIC ---
+
         # News & Earnings Date
         if source == "yfinance":
             try:
@@ -604,40 +725,68 @@ def parse_ticker_data(data, ticker_symbol):
              # --- END OF NEW ---
 
 
-        # --- 8. Risk Management (with Fallback & Position Sizing) ---
+        # --- 8. Risk Management (MODIFIED with Cut-Loss Filter) ---
         rm_config = CONFIG.get('RISK_MANAGEMENT', {})
         atr_sl_mult = rm_config.get('ATR_STOP_LOSS_MULTIPLIER', 1.5)
-        # Get the new config values
         fib_target_mult = 1.618 # Fibonacci 1.618 Extension Target
-        risk_per_trade_usd = rm_config.get('RISK_PER_TRADE_AMOUNT', 500) # Default $500 risk
+        risk_per_trade_usd = rm_config.get('RISK_PER_TRADE_AMOUNT', 500)
+        use_cut_loss_filter = rm_config.get('USE_CUT_LOSS_FILTER', True)
         
         atr = parsed.get('ATR')
         last_price = parsed.get('last_price')
         support_90d = parsed.get('Support_90d')
+        last_swing_low = parsed.get('last_swing_low', np.nan)
         
         risk_per_share = np.nan
-        stop_loss_price = np.nan
+        final_stop_loss_price = np.nan
+        stop_loss_price_atr = np.nan
+        stop_loss_price_cutloss = np.nan
         
-        # Method 1: Try ATR (Primary)
+        # Method 1: Calculate ATR Stop
         if pd.notna(atr) and atr > 0:
-            risk_per_share = atr * atr_sl_mult
-            stop_loss_price = last_price - risk_per_share
-            parsed['SL_Method'] = "ATR"
+            stop_loss_price_atr = last_price - (atr * atr_sl_mult)
+            parsed['Stop Loss (ATR)'] = stop_loss_price_atr
         
-        # Method 2: Fallback to 90-Day Low (Support)
-        elif pd.notna(support_90d) and support_90d < last_price:
-            risk_per_share = last_price - support_90d
-            stop_loss_price = support_90d
-            parsed['SL_Method'] = "90-Day Low"
+        # Method 2: Calculate Cut-Loss Stop (last swing low)
+        if pd.notna(last_swing_low) and last_swing_low < last_price:
+            stop_loss_price_cutloss = last_swing_low
+            parsed['Stop Loss (Cut Loss)'] = stop_loss_price_cutloss
             
-        # Method 3: Final Fallback (10% Percentage)
+        # Determine Final Stop Loss
+        # Prefer the *tighter* (higher) stop between ATR and Cut-Loss
+        if use_cut_loss_filter and pd.notna(stop_loss_price_atr) and pd.notna(stop_loss_price_cutloss):
+            final_stop_loss_price = max(stop_loss_price_atr, stop_loss_price_cutloss)
+            if final_stop_loss_price == stop_loss_price_cutloss:
+                parsed['SL_Method'] = "Cut-Loss"
+            else:
+                parsed['SL_Method'] = "ATR"
+            logging.info(f"[{ticker_symbol}] SL Filter: ATR ({stop_loss_price_atr:.2f}) vs CutLoss ({stop_loss_price_cutloss:.2f}). Chose: {parsed['SL_Method']}")
+        
+        # Fallbacks if one is missing
+        elif pd.notna(stop_loss_price_atr):
+            final_stop_loss_price = stop_loss_price_atr
+            parsed['SL_Method'] = "ATR"
+        elif pd.notna(stop_loss_price_cutloss):
+            final_stop_loss_price = stop_loss_price_cutloss
+            parsed['SL_Method'] = "Cut-Loss"
+            
+        # Final Fallbacks (90d Low or 10%)
+        elif pd.notna(support_90d) and support_90d < last_price:
+            final_stop_loss_price = support_90d
+            parsed['SL_Method'] = "90-Day Low"
         else:
             if pd.notna(last_price):
-                risk_per_share = last_price * 0.10 # 10% hard stop
-                stop_loss_price = last_price - risk_per_share
+                final_stop_loss_price = last_price * 0.90 # 10% hard stop
                 parsed['SL_Method'] = "10% Fallback"
 
-        # --- NEW: Calculate Take Profit, R/R, and Position Size ---
+        # --- Calculate Take Profit, R/R, and Position Size using FINAL Stop ---
+        
+        # First, define the risk_per_share based on the final_stop_loss_price
+        if pd.notna(final_stop_loss_price) and final_stop_loss_price < last_price:
+            risk_per_share = last_price - final_stop_loss_price
+        else:
+            risk_per_share = np.nan # No valid stop found
+
         if pd.notna(risk_per_share) and risk_per_share > 0:
             # Calculate Fibonacci Take Profit (1.618 extension)
             take_profit_price = last_price + (risk_per_share * fib_target_mult)
@@ -648,7 +797,8 @@ def parse_ticker_data(data, ticker_symbol):
             position_size_usd = position_size_shares * last_price
             
             # Final Metrics
-            parsed['Stop Loss Price'] = stop_loss_price
+            parsed['Stop Loss Price'] = final_stop_loss_price # For compatibility
+            parsed['Final Stop Loss'] = final_stop_loss_price
             parsed['Take Profit Price'] = take_profit_price
             parsed['Risk/Reward Ratio'] = reward_per_share / risk_per_share
             parsed['Risk % (to Stop)'] = (risk_per_share / last_price) * 100
@@ -658,6 +808,7 @@ def parse_ticker_data(data, ticker_symbol):
         else:
             # Set all to nan if no valid stop loss was found
             parsed['Stop Loss Price'] = np.nan
+            parsed['Final Stop Loss'] = np.nan
             parsed['Take Profit Price'] = np.nan
             parsed['Risk/Reward Ratio'] = np.nan
             parsed['Risk % (to Stop)'] = np.nan
@@ -666,6 +817,12 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['Risk Per Trade (USD)'] = risk_per_trade_usd
             if 'SL_Method' not in parsed:
                 parsed['SL_Method'] = "N/A"
+        
+        # Fill missing ATR/CutLoss keys if they weren't calculated
+        if 'Stop Loss (ATR)' not in parsed:
+            parsed['Stop Loss (ATR)'] = np.nan
+        if 'Stop Loss (Cut Loss)' not in parsed:
+            parsed['Stop Loss (Cut Loss)'] = np.nan
 
         return parsed
         
