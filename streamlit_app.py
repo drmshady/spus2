@@ -850,6 +850,10 @@ def main():
             logging.warning(f"Z-Score column {z_col} not found in dataframe.")
 
     st.subheader("Filters")
+    
+    # --- ⭐️ NEW: Filter section modified ⭐️ ---
+    
+    # Row 1: Sector & Market Cap
     filt_col1, filt_col2 = st.columns(2)
     
     all_sectors = sorted(df['Sector'].unique())
@@ -881,16 +885,65 @@ def main():
             value=(min_cap, max_cap),
             format="%.1f B"
         )
-    
-    filtered_df = df[
-        (df['Sector'].isin(selected_sectors))
-    ].copy()
+        
+    # Row 2: Trend & Support % (NEW)
+    filt_col3, filt_col4 = st.columns(2)
 
-    if not filtered_df.empty and 'marketCap' in filtered_df.columns and cap_range != (0.0, 0.0):
-         filtered_df = filtered_df[
-            (filtered_df['marketCap'].ge(cap_range[0] * 1e9)) &
-            (filtered_df['marketCap'].le(cap_range[1] * 1e9))
-         ]
+    # NEW: Trend Filter
+    all_trends = sorted(df['Trend (50/200 Day MA)'].unique())
+    selected_trends = filt_col3.multiselect("Filter by MA Trend:", all_trends, default=all_trends)
+    
+    # NEW: Support % Filter
+    if 'pct_above_support' in df.columns and not df['pct_above_support'].isnull().all():
+        # Handle potential negative values if price is *below* support
+        min_pct = float(df['pct_above_support'].min())
+        max_pct = float(df['pct_above_support'].max())
+        
+        # Ensure min_pct is at least 0 for the default slider start
+        default_min_pct = max(0.0, min_pct)
+
+        if min_pct >= max_pct:
+            max_pct = min_pct + 10.0 # Add 10% if min/max are same
+        
+        support_range = filt_col4.slider(
+            "Filter by % Above Support (90d):",
+            min_value=min_pct, # Allow filtering for stocks *below* support
+            max_value=max_pct,
+            value=(default_min_pct, max_pct), # Default to 0% -> Max
+            format="%.1f%%"
+        )
+    else:
+        filt_col4.info("No Support % data to filter.")
+        support_range = (0.0, 0.0)
+    
+
+    # --- NEW: Combined Filtering Logic ---
+    
+    # Base filter criteria
+    base_filters = (
+        (df['Sector'].isin(selected_sectors)) &
+        (df['Trend (50/200 Day MA)'].isin(selected_trends))
+    )
+
+    # Market Cap filter (only if valid range)
+    if cap_range != (0.0, 0.0) and 'marketCap' in df.columns and not df['marketCap'].isnull().all():
+        cap_filter = (
+            (df['marketCap'].ge(cap_range[0] * 1e9)) &
+            (df['marketCap'].le(cap_range[1] * 1e9))
+        )
+        base_filters &= cap_filter
+
+    # Support % filter (only if valid range and data exists)
+    if support_range != (0.0, 0.0) and 'pct_above_support' in df.columns and not df['pct_above_support'].isnull().all():
+        support_filter = (
+            (df['pct_above_support'].ge(support_range[0])) &
+            (df['pct_above_support'].le(support_range[1]))
+        )
+        base_filters &= support_filter
+
+    filtered_df = df[base_filters].copy()
+    
+    # --- END OF NEW FILTER LOGIC ---
     
     filtered_df.sort_values(by='Final Quant Score', ascending=False, inplace=True)
     
@@ -984,7 +1037,8 @@ def main():
                 'Z_Value', 'Z_Momentum', 'Z_Quality', 
                 'Z_Size', 'Z_LowVolatility', 'Z_Technical',
                 'Risk/Reward Ratio',
-                'Position Size (USD)'
+                'Position Size (USD)',
+                'pct_above_support' # <-- NEW
             ]
             display_cols = [c for c in display_cols if c in filtered_df.columns]
             
@@ -1006,6 +1060,7 @@ def main():
                     "Z_Technical": st.column_config.NumberColumn(format="%.2f"),
                     "Risk/Reward Ratio": st.column_config.NumberColumn(format="%.2f"),
                     "Position Size (USD)": st.column_config.NumberColumn(format="$%,.0f"),
+                    "pct_above_support": st.column_config.NumberColumn(format="%.1f%%", help="% Above 90-day Support"), # <-- NEW
                 },
                 use_container_width=True,
                 height=700
@@ -1113,13 +1168,39 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     st.markdown(f"**Sector:** {ticker_data['Sector']} | **Data Source:** `{ticker_data['source']}`")
     
     # Key Metrics
-    kpi_cols = st.columns(4)
+    kpi_cols = st.columns(5) # <-- CHANGED from 4
     kpi_cols[0].metric("Final Quant Score", f"{ticker_data['Final Quant Score']:.3f}")
     kpi_cols[1].metric("Last Price", f"${ticker_data['last_price']:.2f}")
     kpi_cols[2].metric("Market Cap", f"${ticker_data['marketCap']/1e9:.1f} B")
     kpi_cols[3].metric("Trend (50/200 MA)", ticker_data['Trend (50/200 Day MA)'])
     
+    # --- NEW: Last Dividend Metric ---
+    last_div_val = ticker_data.get('last_dividend_value', np.nan)
+    last_div_date = ticker_data.get('last_dividend_date', 'N/A')
+    div_display = f"${last_div_val:.2f}" if pd.notna(last_div_val) else "N/A"
+    div_help = f"Paid on: {last_div_date}"
+    kpi_cols[4].metric("Last Dividend", div_display, help=div_help)
+    # --- END OF NEW ---
+    
     st.divider()
+
+    # --- NEW: Latest News Section ---
+    st.subheader("Latest News")
+    news_list = ticker_data.get('news_list', [])
+    has_recent_news = ticker_data.get('recent_news', 'No') == 'Yes'
+    
+    if has_recent_news:
+        st.markdown("🔥 **Recent News Detected (Last 48h)**")
+
+    if not news_list:
+        st.info("No news headlines found.")
+    else:
+        with st.expander("View Latest Headlines", expanded=True):
+            for i, headline in enumerate(news_list):
+                st.markdown(f"- {headline}")
+    # --- END OF NEW ---
+
+    st.divider() 
     
     # Charts
     chart_col1, chart_col2 = st.columns([2, 1])
@@ -1176,6 +1257,38 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     pos_usd_display = f"${pos_usd:,.0f}" if pd.notna(pos_usd) else "N/A"
     risk_val_cols[4].metric("Position Size (USD)", pos_usd_display, help="Shares * Last Price")
 
+    st.divider() 
+
+    # --- ⭐️ NEW: Key Price Zones Section (Order Blocks & S/R) ⭐️ ---
+    st.subheader("Key Price Zones")
+    zone_cols = st.columns(4)
+    
+    # 1. Bullish Order Block (NEW)
+    b_ob_low = ticker_data.get('bullish_ob_low', np.nan)
+    b_ob_high = ticker_data.get('bullish_ob_high', np.nan)
+    b_ob_display = f"${b_ob_low:.2f} - ${b_ob_high:.2f}" if pd.notna(b_ob_low) else "N/A"
+    zone_cols[0].metric("Bullish OB (Demand)", b_ob_display, 
+                        help="Based on the last down-candle before the recent 40-day high. A potential area of buying interest.")
+    
+    # 2. Bearish Order Block (NEW)
+    be_ob_low = ticker_data.get('bearish_ob_low', np.nan)
+    be_ob_high = ticker_data.get('bearish_ob_high', np.nan)
+    # Note: Bearish OBs are typically quoted High-to-Low
+    be_ob_display = f"${be_ob_high:.2f} - ${be_ob_low:.2f}" if pd.notna(be_ob_low) else "N/A"
+    zone_cols[1].metric("Bearish OB (Supply)", be_ob_display, 
+                        help="Based on the last up-candle before the recent 40-day low. A potential area of selling interest.")
+    
+    # 3. Support (This data existed but wasn't shown)
+    support = ticker_data.get('Support_90d', np.nan)
+    support_display = f"${support:.2f}" if pd.notna(support) else "N/A"
+    zone_cols[2].metric("Support (90d Low)", support_display)
+
+    # 4. Resistance (This data existed but wasn't shown)
+    resistance = ticker_data.get('Resistance_90d', np.nan)
+    resistance_display = f"${resistance:.2f}" if pd.notna(resistance) else "N/A"
+    zone_cols[3].metric("Resistance (90d High)", resistance_display)
+    # --- ⭐️ END OF NEW Section ⭐️ ---
+    
     st.divider() 
     
     st.subheader("Valuation")
