@@ -901,13 +901,25 @@ def main():
     
     tab_list = ["🏆 Quant Rankings", "🔬 Ticker Deep Dive", "📈 Portfolio Analytics"]
     
+    # --- THIS IS THE FIX ---
+    # We find the index of the tab we *want* to be active from our session state.
+    try:
+        default_idx = tab_list.index(st.session_state.active_tab)
+    except ValueError:
+        default_idx = 0 # Default to the first tab if not found
+
+    # We create the radio button using index= instead of key=
     selected_tab = st.radio(
         "Navigation:",
         tab_list,
-        key='active_tab',  # Binds the selection to st.session_state.active_tab
+        index=default_idx, # Set the default selected tab
         horizontal=True
     )
     
+    # After the widget is rendered, we update the session state
+    # in case the *user* clicked a different tab.
+    st.session_state.active_tab = selected_tab
+    # --- END OF FIX ---
     # --- Tab 1: Quant Rankings ---
     if selected_tab == "🏆 Quant Rankings":
         st.header("🏆 Top Stocks by Final Quant Score")
