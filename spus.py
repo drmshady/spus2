@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v18.7 (Combined Fix)
+SPUS Quantitative Analyzer v18.8 (Combined Fix)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -688,13 +688,17 @@ def parse_ticker_data(data, ticker_symbol):
                 news_str = "No"
                 news_list_str = "N/A"
                 if news:
-                    news_titles = [str(item.get('title', 'N/A')) for item in news[:5]]
-                    news_list_str = ", ".join(news_titles) # Flatten list to string
-                    
-                    now_ts = datetime.now().timestamp()
-                    recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
-                    if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news):
-                        news_str = "Yes"
+                    # Make sure news is a list before trying to iterate
+                    if isinstance(news, list):
+                        news_titles = [str(item.get('title', 'N/A')) for item in news[:5]]
+                        news_list_str = ", ".join(news_titles) # Flatten list to string
+                        
+                        now_ts = datetime.now().timestamp()
+                        recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
+                        if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news):
+                            news_str = "Yes"
+                    else:
+                        logging.warning(f"[{ticker_symbol}] 'news' data was not a list, skipping.")
                 
                 parsed['news_list'] = str(news_list_str) # Force string
                 parsed['recent_news'] = str(news_str) # Force string
