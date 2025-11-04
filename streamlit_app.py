@@ -1195,7 +1195,7 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     if not news_list:
         st.info("No news headlines found.")
     else:
-        with st.expander("View Latest Headlines", expanded=True):
+        with st.expander("View Latest Headlines", expanded=False):
             for i, headline in enumerate(news_list):
                 st.markdown(f"- {headline}")
     # --- END OF NEW ---
