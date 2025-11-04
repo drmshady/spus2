@@ -58,8 +58,7 @@ except ImportError:
     REPORTLAB_AVAILABLE = False
     logging.warning("Module 'reportlab' not found. PDF report generation will be disabled.")
 
-# --- ⭐️ 2. Custom CSS (Modified) ⭐️ ---
-# --- ⭐️ 2. Custom CSS (Corrected) ⭐️ ---
+# --- ⭐️ 2. Custom CSS (Corrected v2) ⭐️ ---
 def load_css():
     """Injects custom CSS for a modern, minimal, card-based theme."""
     st.markdown(f"""
@@ -83,52 +82,57 @@ def load_css():
             width: 100%; border-radius: 8px; font-weight: 600;
         }}
         
-        /* --- ⭐️ CORRECTED: Radio-to-Tabs styling ⭐️ --- */
+        /* --- ⭐️ CORRECTED: Radio-to-Tabs styling v2 ⭐️ --- */
         [data-testid="stRadio"] > label[data-baseweb="radio"] {{
             display: none; /* Hides the "Navigation:" label */
         }}
         [data-testid="stRadio"] > div[role="radiogroup"] {{
             display: flex;
             flex-direction: row;
-            justify-content: stretch; /* Make items stretch to fill */
+            justify-content: stretch; 
             border-bottom: 2px solid var(--gray-800);
             margin-bottom: 1.5rem;
             width: 100%;
         }}
         [data-testid="stRadio"] input[type="radio"] {{
-            display: none; /* Hide the actual radio button */
+            display: none; /* Hide the actual <input> element */
         }}
+        
+        /* --- THIS IS THE FIX --- */
+        /* 1. Hide the visual radio button circle */
         [data-testid="stRadio"] label[data-baseweb="radio"] > div:first-child {{
-            /* This is the container for the radio button's text */
+            display: none;
+        }}
+        
+        /* 2. Style the text container (which is now the last-child) */
+        [data-testid="stRadio"] label[data-baseweb="radio"] > div:last-child {{
             padding: 10px 15px;
             font-weight: 500;
             cursor: pointer;
             border: 2px solid transparent;
             border-bottom: none;
-            margin-bottom: -2px; /* Pulls the bottom border up */
+            margin-bottom: -2px; 
             transition: all 0.2s ease;
-            
-            /* --- THIS IS THE FIX --- */
-            width: auto;      /* Was 100% */
-            flex-grow: 1;     /* New: Make tabs share space */
-            text-align: center; /* New: Center text */
-            /* --- END OF FIX --- */
+            width: auto;      
+            flex-grow: 1;     
+            text-align: center;
         }}
+        /* --- END OF FIX --- */
+        
         /* The selected "tab" */
-        [data-testid="stRadio"] input[type="radio"]:checked + div {{
+        [data-testid="stRadio"] input[type="radio"]:checked + div:last-child {{
             border-color: var(--gray-800);
-            border-bottom-color: var(--secondary-background-color); /* Hides the bottom border */
+            border-bottom-color: var(--secondary-background-color); 
             border-radius: 8px 8px 0 0;
             background-color: var(--secondary-background-color);
             color: var(--primary);
             font-weight: 600;
         }}
         /* Hover effect */
-        [data-testid="stRadio"] input[type="radio"]:not(:checked) + div:hover {{
+        [data-testid="stRadio"] input[type="radio"]:not(:checked) + div:last-child:hover {{
             background-color: var(--gray-900);
             border-radius: 8px 8px 0 0;
         }}
-        /* --- ⭐️ END OF CORRECTION ⭐️ --- */
         
         [data-testid="stMetric"] {{
             background-color: var(--background-color);
