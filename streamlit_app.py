@@ -1067,7 +1067,7 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     try:
         ticker_list = filtered_df.index.tolist() # Based on filtered list
         current_index = ticker_list.index(selected_ticker)
-        prev_col, next_col, _ = st.columns([1, 1, 4])
+        prev_col, next_col = st.columns(2)
         
         is_first = (current_index == 0)
         if prev_col.button("⬅️ Previous", use_container_width=True, disabled=is_first, key="prev_ticker"):
