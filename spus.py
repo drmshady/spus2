@@ -1,12 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v15 (Research Grade)
+SPUS Quantitative Analyzer v17 (Research Grade)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling:
   (Value, Momentum, Quality, Size, Low Volatility, Technical)
 - Includes robust data fetching for tickers and fundamentals.
 - Modular functions to be called by analysis script.
+- ADDED: Order Block calculation.
+- ADDED: Last Dividend and News List fetching.
+- ADDED: pct_above_support metric for filtering.
 """
 
 import requests
@@ -119,6 +122,66 @@ def fetch_spus_tickers_from_web(url="https://www.sp-funds.com/spus/"):
     except Exception as e:
         logging.error(f"Error parsing HTML from {url}: {e}")
         return None
+
+# --- (This is a NEW function to add to spus.py) ---
+def find_order_blocks(hist_df, lookback=40):
+    """
+    Finds the most recent Bullish and Bearish Order Blocks based on
+    a simple "last opposing candle before high/low" logic.
+    
+    Args:
+        hist_df (pd.DataFrame): The price history.
+        lookback (int): How many days back to look for the high/low.
+
+    Returns:
+        dict: A dictionary with the OB price ranges.
+    """
+    if len(hist_df) < lookback:
+        return {'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan}
+    
+    try:
+        recent_hist = hist_df.iloc[-lookback:]
+        
+        # --- Find Bullish OB (last red candle before 'lookback' high) ---
+        high_price = recent_hist['High'].max()
+        high_idx = recent_hist['High'].idxmax()
+        
+        # Get candles before the high
+        hist_before_high = recent_hist.loc[:high_idx] 
+        # Find last red candle
+        red_candles_before_high = hist_before_high[hist_before_high['Close'] < hist_before_high['Open']]
+        
+        if not red_candles_before_high.empty:
+            last_red_candle = red_candles_before_high.iloc[-1]
+            bullish_ob_low = last_red_candle['Low']
+            bullish_ob_high = last_red_candle['High']
+        else:
+            bullish_ob_low = np.nan
+            bullish_ob_high = np.nan
+
+        # --- Find Bearish OB (last green candle before 'lookback' low) ---
+        low_price = recent_hist['Low'].min()
+        low_idx = recent_hist['Low'].idxmin()
+
+        # Get candles before the low
+        hist_before_low = recent_hist.loc[:low_idx]
+        # Find last green candle
+        green_candles_before_low = hist_before_low[hist_before_low['Close'] > hist_before_low['Open']]
+        
+        if not green_candles_before_low.empty:
+            last_green_candle = green_candles_before_low.iloc[-1]
+            bearish_ob_low = last_green_candle['Low'] # Note: Bearish OB range is High-to-Low
+            bearish_ob_high = last_green_candle['High']
+        else:
+            bearish_ob_low = np.nan
+            bearish_ob_high = np.nan
+
+        return {'bullish_ob_low': bullish_ob_low, 'bullish_ob_high': bullish_ob_high, 
+                'bearish_ob_low': bearish_ob_low, 'bearish_ob_high': bearish_ob_high}
+                
+    except Exception as e:
+        logging.warning(f"Error in find_order_blocks: {e}")
+        return {'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan}
 
 def fetch_spus_tickers():
     """
@@ -470,18 +533,53 @@ def parse_ticker_data(data, ticker_symbol):
         parsed['Support_90d'] = recent_hist['Low'].min()
         parsed['Resistance_90d'] = recent_hist['High'].max()
         
+        # --- NEW: Calculate % Above Support ---
+        support_90d = parsed.get('Support_90d')
+        if pd.notna(support_90d) and pd.notna(last_price) and last_price > 0:
+            parsed['pct_above_support'] = ((last_price - support_90d) / last_price) * 100
+        else:
+            parsed['pct_above_support'] = np.nan
+        # --- END OF NEW ---
+        
+        # --- NEW: Calculate Order Blocks ---
+        ob_lookback = CONFIG.get('TECHNICALS', {}).get('OB_LOOKBACK_PERIOD', 40)
+        ob_data = find_order_blocks(hist, lookback=ob_lookback)
+        parsed.update(ob_data) # This adds all 4 keys (bullish_ob_low, etc.) to the 'parsed' dict
+        # --- END OF NEW ---
+        
         # News & Earnings Date
         if source == "yfinance":
             try:
                 news = earnings_data.get('news', [])
                 if news:
-                    parsed['latest_headline'] = news[0].get('title', "N/A")
+                    # --- MODIFIED: Pass top 5 news items ---
+                    parsed['news_list'] = [item.get('title', 'N/A') for item in news[:5]] # Get top 5 headlines
+                    # --- END OF MODIFICATION ---
+                    
                     now_ts = datetime.now().timestamp()
                     recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
                     parsed['recent_news'] = "Yes" if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news) else "No"
                 else:
-                    parsed['latest_headline'] = "N/A"
+                    parsed['news_list'] = [] # --- NEW ---
                     parsed['recent_news'] = "No"
+
+                # --- NEW: Last Dividend Info ---
+                last_div_date_ts = info.get('lastDividendDate') # This is usually a timestamp
+                last_div_value = info.get('lastDividendValue')
+
+                if last_div_date_ts and pd.notna(last_div_date_ts) and last_div_value:
+                    parsed['last_dividend_date'] = pd.to_datetime(last_div_date_ts, unit='s').strftime('%Y-%m-%d')
+                    parsed['last_dividend_value'] = last_div_value
+                else:
+                    # Fallback: check the history dataframe
+                    divs = hist[hist['Dividends'] > 0]
+                    if not divs.empty:
+                        parsed['last_dividend_date'] = divs.index[-1].strftime('%Y-%m-%d')
+                        parsed['last_dividend_value'] = divs['Dividends'].iloc[-1]
+                    else:
+                        parsed['last_dividend_date'] = "N/A"
+                        parsed['last_dividend_value'] = np.nan
+                # --- END OF NEW DIVIDEND LOGIC ---
 
                 calendar = earnings_data.get('calendar', {})
                 if calendar and 'Earnings Date' in calendar and calendar['Earnings Date']:
@@ -491,13 +589,19 @@ def parse_ticker_data(data, ticker_symbol):
                     parsed['next_earnings_date'] = "N/A"
             except Exception as e:
                  logging.warning(f"[{ticker_symbol}] Error parsing news/calendar: {e}")
-                 parsed['latest_headline'] = "N/A"
+                 parsed['news_list'] = []
                  parsed['recent_news'] = "N/A"
                  parsed['next_earnings_date'] = "N/A"
+                 parsed['last_dividend_date'] = "N/A" # Add to error handler
+                 parsed['last_dividend_value'] = np.nan # Add to error handler
         else:
-             parsed['latest_headline'] = "N/A (AV)"
+             parsed['news_list'] = [] # --- NEW ---
              parsed['recent_news'] = "N/A (AV)"
              parsed['next_earnings_date'] = info.get('DividendDate', 'N/A (AV)') # Bad proxy
+             # --- NEW: Add dividend for AV ---
+             parsed['last_dividend_date'] = info.get('DividendDate', 'N/A (AV)') # AV's 'DividendDate' is often *last*
+             parsed['last_dividend_value'] = float(info.get('DividendPerShare', 'nan'))
+             # --- END OF NEW ---
 
 
         # --- 8. Risk Management (with Fallback & Position Sizing) ---
