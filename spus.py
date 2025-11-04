@@ -811,7 +811,7 @@ def parse_ticker_data(data, ticker_symbol):
         if 'Stop Loss (ATR)' not in parsed:
             parsed['Stop Loss (ATR)'] = np.nan
         if 'Stop Loss (Cut Loss)' not in parsed:
-            parsed['Stop Loss (Cut Loss)']C = np.nan
+            parsed['Stop Loss (Cut Loss)'] = np.nan
             
         # --- Final Type Check ---
         # Ensure all list-like objects are removed before returning
