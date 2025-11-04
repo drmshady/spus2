@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v18.8 (Combined Fix)
+SPUS Quantitative Analyzer v18.9 (Force Boolean Fix)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -9,9 +9,9 @@ SPUS Quantitative Analyzer v18.8 (Combined Fix)
 - FIXED: Replaced pandas_ta.pivothigh/low with scipy.signal.argrelextrema.
 - FIXED: Corrected logic in find_order_blocks.
 - FIXED: Hardened all type-casting in parse_ticker_data.
-- FIXED: Re-applied pd.NA fix for nullable boolean columns
-  ('earnings_volatile', 'earnings_negative') to fix all
-  pyarrow.lib.ArrowInvalid conversion errors.
+- FIXED: Replaced pd.NA with bool(False) for nullable boolean columns
+  ('earnings_volatile', 'earnings_negative') to force a pure
+  boolean column and fix all pyarrow.lib.ArrowInvalid conversion errors.
 - FIXED: Removed 'hist_df' and flattened 'news_list' from the
   parsed dictionary to ensure the final DataFrame is flat.
 - FIXED: Removed SyntaxError typo ('C') in risk management section.
@@ -532,12 +532,12 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['returnOnAssets'] = float(info.get('ReturnOnAssetsTTM', 'nan'))
             parsed['debtToEquity'] = float(info.get('DebtToEquityRatio', 'nan'))
 
-        # --- 3.5. Quality Booleans (FIXED with pd.NA) ---
+        # --- 3.5. Quality Booleans (FIXED with bool(False) default) ---
         eps_val_for_bool = parsed.get('trailingEps')
         if pd.notna(eps_val_for_bool):
             parsed['earnings_negative'] = bool(eps_val_for_bool < 0)
         else:
-            parsed['earnings_negative'] = pd.NA # Use pandas Nullable Boolean
+            parsed['earnings_negative'] = bool(False) # Force default bool
             
         if source == "yfinance" and earnings_data.get("quarterly_earnings") is not None and not earnings_data["quarterly_earnings"].empty:
             quarterly_data = earnings_data["quarterly_earnings"]
@@ -554,11 +554,11 @@ def parse_ticker_data(data, ticker_symbol):
 
             if not q_eps.empty and q_eps.abs().mean() != 0:
                 cv = (q_eps.std() / q_eps.abs().mean())
-                parsed['earnings_volatile'] = bool(cv > 0.5) if pd.notna(cv) else pd.NA
+                parsed['earnings_volatile'] = bool(cv > 0.5) if pd.notna(cv) else bool(False)
             else:
-                parsed['earnings_volatile'] = pd.NA
+                parsed['earnings_volatile'] = bool(False)
         else:
-            parsed['earnings_volatile'] = pd.NA
+            parsed['earnings_volatile'] = bool(False)
             
         # --- 4. Size Factors (WITH TYPE CASTING) ---
         if source == "yfinance":
