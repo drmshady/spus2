@@ -1,19 +1,18 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v18.1 (SMC Pivot Fix)
+SPUS Quantitative Analyzer v18.2 (SMC Logic Fix)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
 - Includes robust data fetching for tickers and fundamentals.
 - Modular functions to be called by analysis script.
 - REWORKED: find_order_blocks for SMC (BOS, Mitigation, Validation).
-- FIXED: Replaced pandas_ta.pivothigh/low with scipy.signal.argrelextrema
-  to resolve AttributeError and improve compatibility.
+- FIXED: Replaced pandas_ta.pivothigh/low with scipy.signal.argrelextrema.
+- FIXED: Corrected logic in find_order_blocks to allow Bullish OB detection
+  even if no recent swing lows are found (and vice-versa).
 - ADDED: 'entry_signal' filter based on proximity to validated OBs.
 - MODIFIED: Risk logic to use dynamic 'Final Stop Loss' comparing
   ATR vs. 'Cut Loss' (last swing low).
-- ADDED: Last Dividend and News List fetching.
-- ADDED: pct_above_support metric for filtering.
 """
 
 import requests
@@ -28,7 +27,7 @@ import json
 import numpy as np
 from bs4 import BeautifulSoup
 import random
-from scipy.signal import argrelextrema # <-- IMPORT FIX
+from scipy.signal import argrelextrema # <-- IMPORT
 
 # --- Define Base Directory ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -128,22 +127,12 @@ def fetch_spus_tickers_from_web(url="https://www.sp-funds.com/spus/"):
         logging.error(f"Error parsing HTML from {url}: {e}")
         return None
 
-# --- (This is the NEW, REWRITTEN function) ---
+# --- (This is the NEW, REWRITTEN and FIXED function) ---
 def find_order_blocks(hist_df_full, ticker="TICKER"):
     """
     Finds the most recent Bullish and Bearish Order Blocks based on
-    Smart Money Concepts (SMC):
-    1. Find Swing Highs/Lows (Pivots).
-    2. Find the most recent Break of Structure (BOS) (close > SH or close < SL).
-    3. Identify the opposing candle cluster *before* the BOS as the Order Block.
-    4. Check if the OB was mitigated (touched) and then validated (bounced).
-    
-    Args:
-        hist_df_full (pd.DataFrame): The price history.
-        ticker (str): The ticker symbol (for logging).
-
-    Returns:
-        dict: A dictionary with OB price ranges, validation status, and last swing points.
+    Smart Money Concepts (SMC).
+    FIXED: Logic is now independent for Bullish/Bearish sides.
     """
     
     # --- 1. Initialize & Load Config ---
@@ -172,118 +161,108 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
         low_idx = argrelextrema(hist_df['Low'].values, np.less_equal, order=pivots_n)[0]
         
         hist_df['sh'] = np.nan
-        # Use .iloc[index_list, column_index] to set values
         hist_df.iloc[high_idx, hist_df.columns.get_loc('sh')] = hist_df.iloc[high_idx]['High']
         hist_df['sl'] = np.nan
         hist_df.iloc[low_idx, hist_df.columns.get_loc('sl')] = hist_df.iloc[low_idx]['Low']
-        # --- END OF FIX ---
 
         swing_highs = hist_df[hist_df['sh'].notna()]
         swing_lows = hist_df[hist_df['sl'].notna()]
 
-        if swing_highs.empty or swing_lows.empty:
-            logging.warning(f"[{ticker}] No swing points found in the last {lookback} days.")
-            return ob_data
-            
-        last_sh = swing_highs.iloc[-1]
-        last_sl = swing_lows.iloc[-1]
-        ob_data['last_swing_low'] = last_sl.sl
-        ob_data['last_swing_high'] = last_sh.sh
-
         # --- 3. Find Most Recent Bullish OB (BOS Up) ---
-        # Look for a close *above* the last swing high
-        # Need to slice hist_df *after* the last_sh index
-        hist_after_sh = hist_df.loc[last_sh.name:]
-        bos_up_candles = hist_after_sh[hist_after_sh['Close'] > last_sh.sh]
-        
-        if not bos_up_candles.empty:
-            first_bos_candle = bos_up_candles.iloc[0]
+        # This logic runs *only* if we have swing highs to break
+        if not swing_highs.empty:
+            last_sh = swing_highs.iloc[-1]
+            ob_data['last_swing_high'] = last_sh.sh
             
-            # Find the opposing (bearish) candle cluster *before* the BOS
-            candles_before_bos = hist_df.loc[:first_bos_candle.name].iloc[:-1]
-            bearish_candles = candles_before_bos[candles_before_bos['Close'] < candles_before_bos['Open']]
+            hist_after_sh = hist_df.loc[last_sh.name:]
+            bos_up_candles = hist_after_sh[hist_after_sh['Close'] > last_sh.sh]
             
-            if not bearish_candles.empty:
-                last_bearish_cluster = bearish_candles.iloc[-cluster_size:]
-                ob_data['bullish_ob_low'] = last_bearish_cluster['Low'].min()
-                ob_data['bullish_ob_high'] = last_bearish_cluster['High'].max()
-                logging.info(f"[{ticker}] Found Bullish BOS at {first_bos_candle.name.date()}. OB Zone: {ob_data['bullish_ob_low']:.2f}-{ob_data['bullish_ob_high']:.2f}")
+            if not bos_up_candles.empty:
+                first_bos_candle = bos_up_candles.iloc[0]
+                candles_before_bos = hist_df.loc[:first_bos_candle.name].iloc[:-1]
+                bearish_candles = candles_before_bos[candles_before_bos['Close'] < candles_before_bos['Open']]
+                
+                if not bearish_candles.empty:
+                    last_bearish_cluster = bearish_candles.iloc[-cluster_size:]
+                    ob_data['bullish_ob_low'] = last_bearish_cluster['Low'].min()
+                    ob_data['bullish_ob_high'] = last_bearish_cluster['High'].max()
+                    logging.info(f"[{ticker}] Found Bullish BOS at {first_bos_candle.name.date()}. OB Zone: {ob_data['bullish_ob_low']:.2f}-{ob_data['bullish_ob_high']:.2f}")
 
-                # --- 4. Check Bullish OB Validation ---
-                history_after_bos = hist_df.loc[first_bos_candle.name:].iloc[1:]
-                if not history_after_bos.empty:
-                    # Check for mitigation (price returns to touch the OB)
-                    candles_that_touched = history_after_bos[history_after_bos['Low'] <= ob_data['bullish_ob_high']]
-                    
-                    if not candles_that_touched.empty:
-                        # Check for invalidation (price closes *through* the OB)
-                        invalidated = (candles_that_touched['Close'] < ob_data['bullish_ob_low']).any()
+                    # --- 4. Check Bullish OB Validation ---
+                    history_after_bos = hist_df.loc[first_bos_candle.name:].iloc[1:]
+                    if not history_after_bos.empty:
+                        candles_that_touched = history_after_bos[history_after_bos['Low'] <= ob_data['bullish_ob_high']]
                         
-                        if not invalidated:
-                            # Check for reaction/bounce (e.g., makes a new high after touch)
-                            first_touch_idx = candles_that_touched.index[0]
-                            reaction_candles = hist_df.loc[first_touch_idx:].iloc[1:validation_lookback+1]
+                        if not candles_that_touched.empty:
+                            invalidated = (candles_that_touched['Close'] < ob_data['bullish_ob_low']).any()
                             
-                            if not reaction_candles.empty:
-                                # A simple validation: price moves up significantly or makes a new high
-                                bounced = reaction_candles['High'].max() > first_bos_candle.High
-                                if bounced:
-                                    ob_data['bullish_ob_validated'] = True
-                                    logging.info(f"[{ticker}] Bullish OB was validated (mitigated and bounced).")
-                        else:
-                             logging.info(f"[{ticker}] Bullish OB was invalidated (price closed below zone).")
+                            if not invalidated:
+                                first_touch_idx = candles_that_touched.index[0]
+                                reaction_candles = hist_df.loc[first_touch_idx:].iloc[1:validation_lookback+1]
+                                
+                                if not reaction_candles.empty:
+                                    bounced = reaction_candles['High'].max() > first_bos_candle.High
+                                    if bounced:
+                                        ob_data['bullish_ob_validated'] = True
+                                        logging.info(f"[{ticker}] Bullish OB was validated (mitigated and bounced).")
+                            else:
+                                 logging.info(f"[{ticker}] Bullish OB was invalidated (price closed below zone).")
 
         # --- 5. Find Most Recent Bearish OB (BOS Down) ---
-        # Look for a close *below* the last swing low
-        hist_after_sl = hist_df.loc[last_sl.name:]
-        bos_down_candles = hist_after_sl[hist_after_sl['Close'] < last_sl.sl]
-        
-        if not bos_down_candles.empty:
-            first_bos_candle = bos_down_candles.iloc[0]
+        # This logic runs *only* if we have swing lows to break
+        if not swing_lows.empty:
+            last_sl = swing_lows.iloc[-1]
+            ob_data['last_swing_low'] = last_sl.sl
             
-            # Find the opposing (bullish) candle cluster *before* the BOS
-            candles_before_bos = hist_df.loc[:first_bos_candle.name].iloc[:-1]
-            bullish_candles = candles_before_bos[candles_before_bos['Close'] > candles_before_bos['Open']]
+            hist_after_sl = hist_df.loc[last_sl.name:]
+            bos_down_candles = hist_after_sl[hist_after_sl['Close'] < last_sl.sl]
             
-            if not bullish_candles.empty:
-                last_bullish_cluster = bullish_candles.iloc[-cluster_size:]
-                ob_data['bearish_ob_low'] = last_bullish_cluster['Low'].min()
-                ob_data['bearish_ob_high'] = last_bullish_cluster['High'].max()
-                logging.info(f"[{ticker}] Found Bearish BOS at {first_bos_candle.name.date()}. OB Zone: {ob_data['bearish_ob_low']:.2f}-{ob_data['bearish_ob_high']:.2f}")
+            if not bos_down_candles.empty:
+                first_bos_candle = bos_down_candles.iloc[0]
+                candles_before_bos = hist_df.loc[:first_bos_candle.name].iloc[:-1]
+                bullish_candles = candles_before_bos[candles_before_bos['Close'] > candles_before_bos['Open']]
+                
+                if not bullish_candles.empty:
+                    last_bullish_cluster = bullish_candles.iloc[-cluster_size:]
+                    ob_data['bearish_ob_low'] = last_bullish_cluster['Low'].min()
+                    ob_data['bearish_ob_high'] = last_bullish_cluster['High'].max()
+                    logging.info(f"[{ticker}] Found Bearish BOS at {first_bos_candle.name.date()}. OB Zone: {ob_data['bearish_ob_low']:.2f}-{ob_data['bearish_ob_high']:.2f}")
 
-                # --- 6. Check Bearish OB Validation ---
-                history_after_bos = hist_df.loc[first_bos_candle.name:].iloc[1:]
-                if not history_after_bos.empty:
-                    # Check for mitigation (price returns to touch the OB)
-                    candles_that_touched = history_after_bos[history_after_bos['High'] >= ob_data['bearish_ob_low']]
-                    
-                    if not candles_that_touched.empty:
-                        # Check for invalidation (price closes *through* the OB)
-                        invalidated = (candles_that_touched['Close'] > ob_data['bearish_ob_high']).any()
+                    # --- 6. Check Bearish OB Validation ---
+                    history_after_bos = hist_df.loc[first_bos_candle.name:].iloc[1:]
+                    if not history_after_bos.empty:
+                        candles_that_touched = history_after_bos[history_after_bos['High'] >= ob_data['bearish_ob_low']]
                         
-                        if not invalidated:
-                            # Check for reaction/bounce (e.g., makes a new low after touch)
-                            first_touch_idx = candles_that_touched.index[0]
-                            reaction_candles = hist_df.loc[first_touch_idx:].iloc[1:validation_lookback+1]
+                        if not candles_that_touched.empty:
+                            invalidated = (candles_that_touched['Close'] > ob_data['bearish_ob_high']).any()
                             
-                            if not reaction_candles.empty:
-                                bounced = reaction_candles['Low'].min() < first_bos_candle.Low
-                                if bounced:
-                                    ob_data['bearish_ob_validated'] = True
-                                    logging.info(f"[{ticker}] Bearish OB was validated (mitigated and bounced).")
-                        else:
-                             logging.info(f"[{ticker}] Bearish OB was invalidated (price closed above zone).")
+                            if not invalidated:
+                                first_touch_idx = candles_that_touched.index[0]
+                                reaction_candles = hist_df.loc[first_touch_idx:].iloc[1:validation_lookback+1]
+                                
+                                if not reaction_candles.empty:
+                                    bounced = reaction_candles['Low'].min() < first_bos_candle.Low
+                                    if bounced:
+                                        ob_data['bearish_ob_validated'] = True
+                                        logging.info(f"[{ticker}] Bearish OB was validated (mitigated and bounced).")
+                            else:
+                                 logging.info(f"[{ticker}] Bearish OB was invalidated (price closed above zone).")
+        
+        # --- 7. Final Return ---
+        if swing_highs.empty and swing_lows.empty:
+             logging.warning(f"[{ticker}] No swing points found in the last {lookback} days.")
 
         return ob_data
                 
     except Exception as e:
         logging.warning(f"[{ticker}] Error in find_order_blocks: {e}", exc_info=True)
         # Return default structure on error
-        return {
+        ob_data_default = {
             'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bullish_ob_validated': False,
             'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': False,
             'last_swing_low': np.nan, 'last_swing_high': np.nan
         }
+        return ob_data_default
 
 def fetch_spus_tickers():
     """
@@ -322,7 +301,6 @@ def fetch_data_yfinance(ticker_obj):
         info = ticker_obj.info
         
         # Add earnings data
-        # *** CORRECTED FOR DEPRECATION WARNING ***
         earnings = {
             "earnings": ticker_obj.income_stmt,
             "quarterly_earnings": ticker_obj.quarterly_income_stmt,
@@ -375,7 +353,6 @@ def fetch_data_alpha_vantage(ticker, api_key):
                 '6. volume': 'Volume'
             }, inplace=True)
             hist_data = hist_data.sort_index()
-            # Note: AV data needs more mapping for dividends/splits if required
             hist_data['Dividends'] = 0.0
             hist_data['Stock Splits'] = 0.0
         else:
@@ -412,10 +389,8 @@ def is_data_valid(data, source="yfinance"):
     info = data.get("info", {})
     
     if source == "yfinance":
-        # Check yfinance info dict
         key_fields = ['sector', 'marketCap', 'trailingEps', 'priceToBook', 'returnOnEquity', 'forwardPE']
-    else:
-        # Check Alpha Vantage info dict (keys are different)
+    else: # Alpha Vantage
         key_fields = ['Sector', 'MarketCapitalization', 'EPS', 'BookValue', 'ReturnOnEquityTTM', 'ForwardPE']
     
     missing_fields = [f for f in key_fields if info.get(f) is None or info.get(f) == 0 or info.get(f) == "None"]
@@ -451,7 +426,6 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['forwardPE'] = info.get('forwardPE')
             parsed['priceToBook'] = info.get('priceToBook')
             parsed['marketCap'] = info.get('marketCap')
-            # *** CORRECTED FOR KEYERROR ***
             parsed['Sector'] = info.get('sector', 'Unknown')
             parsed['enterpriseToEbitda'] = info.get('enterpriseToEbitda')
             parsed['freeCashflow'] = info.get('freeCashflow')
@@ -460,7 +434,6 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['forwardPE'] = float(info.get('ForwardPE', 'nan'))
             parsed['priceToBook'] = float(info.get('PriceToBookRatio', 'nan'))
             parsed['marketCap'] = float(info.get('MarketCapitalization', 'nan'))
-            # *** CORRECTED FOR KEYERROR ***
             parsed['Sector'] = info.get('Sector', 'Unknown')
             parsed['enterpriseToEbitda'] = float(info.get('EVToEBITDA', 'nan'))
             parsed['freeCashflow'] = None # Not in AV Overview
@@ -473,7 +446,6 @@ def parse_ticker_data(data, ticker_symbol):
         if parsed['priceToBook'] and last_price:
             bvps = last_price / parsed['priceToBook']
         
-        # *** CORRECTED FOR RUNTIMEWARNING ***
         if parsed['trailingEps'] and bvps and parsed['trailingEps'] > 0 and bvps > 0:
             parsed['grahamNumber'] = (22.5 * parsed['trailingEps'] * bvps) ** 0.5
             parsed['grahamValuation'] = "Undervalued (Graham)" if last_price < parsed['grahamNumber'] else "Overvalued (Graham)"
@@ -519,19 +491,16 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['debtToEquity'] = float(info.get('DebtToEquityRatio', 'nan'))
 
         # Earnings volatility (simplified)
-        # *** CORRECTED FOR DEPRECATION WARNING ***
         if source == "yfinance" and earnings_data.get("quarterly_earnings") is not None and not earnings_data["quarterly_earnings"].empty:
-            
             quarterly_data = earnings_data["quarterly_earnings"]
             
             if 'Net Income' in quarterly_data.index:
                 q_eps = quarterly_data.loc['Net Income']
             elif 'Earnings' in quarterly_data.columns:
-                 # Fallback for old structure, just in case
                  q_eps = quarterly_data['Earnings']
             else:
                  logging.warning(f"[{ticker_symbol}] Could not find 'Net Income' (index) or 'Earnings' (column) in quarterly data.")
-                 q_eps = pd.Series([np.nan]) # Create a series to avoid errors
+                 q_eps = pd.Series([np.nan])
                  
             q_eps = pd.to_numeric(q_eps, errors='coerce').dropna()
 
@@ -550,8 +519,8 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['floatShares'] = info.get('floatShares')
             parsed['averageVolume'] = info.get('averageVolume')
         else: # Alpha Vantage mapping
-            parsed['floatShares'] = float(info.get('SharesOutstanding', 'nan')) # Proxy, AV uses SharesOutstanding
-            parsed['averageVolume'] = float(info.get('50DayMovingAverage', 'nan')) # Bad proxy, but it's something
+            parsed['floatShares'] = float(info.get('SharesOutstanding', 'nan')) # Proxy
+            parsed['averageVolume'] = float(info.get('50DayMovingAverage', 'nan')) # Bad proxy
         
         parsed['floatAdjustedMarketCap'] = (parsed['floatShares'] * last_price) if parsed['floatShares'] and last_price else parsed['marketCap']
 
@@ -560,42 +529,33 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['beta'] = info.get('beta')
         else: # Alpha Vantage mapping
             parsed['beta'] = float(info.get('Beta', 'nan'))
-        # volatility_1y already calculated in Momentum
 
         # --- 6. Technical Factors ---
         cfg = CONFIG['TECHNICALS']
         
-        # *** ADD THIS WARNING CHECK ***
         min_hist_len = max(cfg.get('LONG_MA_WINDOW', 200), 252) # Use longest MA or 1 year
         if len(hist) < min_hist_len:
             warning_msg = f"Short history ({len(hist)} days). TA/Risk metrics may be N/A or unreliable."
             parsed['data_warning'] = warning_msg
             logging.warning(f"[{ticker_symbol}] {warning_msg}")
-        # *** END OF NEW CHECK ***
         
-        # Calculate other indicators using append
         hist.ta.rsi(length=cfg['RSI_WINDOW'], append=True)
         hist.ta.sma(length=cfg['SHORT_MA_WINDOW'], append=True)
         hist.ta.sma(length=cfg['LONG_MA_WINDOW'], append=True)
         hist.ta.macd(fast=cfg['MACD_SHORT_SPAN'], slow=cfg['MACD_LONG_SPAN'], signal=cfg['MACD_SIGNAL_SPAN'], append=True)
         hist.ta.adx(length=cfg['ADX_WINDOW'], append=True)
         
-        # *** FIX: Calculate ATR separately and assign it directly ***
         atr_col = f'ATR_{cfg["ATR_WINDOW"]}'
         atr_series = hist.ta.atr(length=cfg['ATR_WINDOW'])
         if atr_series is not None:
             hist[atr_col] = atr_series
-        # *** END OF FIX ***
 
-        # Define column names
         rsi_col = f'RSI_{cfg["RSI_WINDOW"]}'
         short_ma_col = f'SMA_{cfg["SHORT_MA_WINDOW"]}'
         long_ma_col = f'SMA_{cfg["LONG_MA_WINDOW"]}'
         macd_h_col = f'MACDh_{cfg["MACD_SHORT_SPAN"]}_{cfg["MACD_LONG_SPAN"]}_{cfg["MACD_SIGNAL_SPAN"]}'
         adx_col = f'ADX_{cfg["ADX_WINDOW"]}'
-        # atr_col is already defined above
 
-        # Parse the last value from each column
         parsed['RSI'] = hist[rsi_col].iloc[-1] if rsi_col in hist.columns and not hist[rsi_col].isnull().all() else np.nan
         parsed['ATR'] = hist[atr_col].iloc[-1] if atr_col in hist.columns and not hist[atr_col].isnull().all() else np.nan
         parsed['ADX'] = hist[adx_col].iloc[-1] if adx_col in hist.columns and not hist[adx_col].isnull().all() else np.nan
@@ -606,7 +566,6 @@ def parse_ticker_data(data, ticker_symbol):
         parsed['Price_vs_SMA50'] = (last_price / last_short_ma) if last_short_ma else np.nan
         parsed['Price_vs_SMA200'] = (last_price / last_long_ma) if last_long_ma else np.nan
         
-        # Old Trend/MACD signals (for compatibility)
         hist_val = hist[macd_h_col].iloc[-1] if macd_h_col in hist.columns else np.nan
         if not pd.isna(last_short_ma) and not pd.isna(last_long_ma):
             if last_short_ma > last_long_ma:
@@ -635,19 +594,15 @@ def parse_ticker_data(data, ticker_symbol):
         parsed['Support_90d'] = recent_hist['Low'].min()
         parsed['Resistance_90d'] = recent_hist['High'].max()
         
-        # --- NEW: Calculate % Above Support ---
         support_90d = parsed.get('Support_90d')
         if pd.notna(support_90d) and pd.notna(last_price) and last_price > 0:
             parsed['pct_above_support'] = ((last_price - support_90d) / last_price) * 100
         else:
             parsed['pct_above_support'] = np.nan
-        # --- END OF NEW ---
         
         # --- MODIFIED: Calculate SMC Order Blocks ---
-        # The 'lookback' param is now handled inside the function via CONFIG
         ob_data = find_order_blocks(hist, ticker=ticker_symbol)
         parsed.update(ob_data) # This adds all keys (bullish_ob_low, etc.)
-        # --- END OF MODIFICATION ---
         
         # --- NEW: Entry Signal Logic ---
         smc_config = CONFIG.get('TECHNICALS', {}).get('SMC_ORDER_BLOCKS', {})
@@ -664,7 +619,6 @@ def parse_ticker_data(data, ticker_symbol):
 
         # Long Entry Logic
         if bullish_ob_validated and pd.notna(bullish_ob_high) and pd.notna(bullish_ob_low):
-            # Price must be within the zone or X% above it
             entry_zone_top = bullish_ob_high * (1 + proximity_pct)
             if last_price >= bullish_ob_low and last_price <= entry_zone_top:
                 entry_signal = "Buy near Bullish OB"
@@ -672,40 +626,33 @@ def parse_ticker_data(data, ticker_symbol):
 
         # Short Entry Logic
         elif bearish_ob_validated and pd.notna(bearish_ob_low) and pd.notna(bearish_ob_high):
-             # Price must be within the zone or X% below it
             entry_zone_bottom = bearish_ob_low * (1 - proximity_pct)
             if last_price <= bearish_ob_high and last_price >= entry_zone_bottom:
                 entry_signal = "Sell near Bearish OB"
                 logging.info(f"[{ticker_symbol}] Entry Signal: Price {last_price} is near validated Bearish OB ({bearish_ob_low:.2f}-{bearish_ob_high:.2f})")
         
         parsed['entry_signal'] = entry_signal
-        # --- END OF NEW ENTRY LOGIC ---
 
         # News & Earnings Date
         if source == "yfinance":
             try:
                 news = earnings_data.get('news', [])
                 if news:
-                    # --- MODIFIED: Pass top 5 news items ---
-                    parsed['news_list'] = [item.get('title', 'N/A') for item in news[:5]] # Get top 5 headlines
-                    # --- END OF MODIFICATION ---
-                    
+                    parsed['news_list'] = [item.get('title', 'N/A') for item in news[:5]]
                     now_ts = datetime.now().timestamp()
                     recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
                     parsed['recent_news'] = "Yes" if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news) else "No"
                 else:
-                    parsed['news_list'] = [] # --- NEW ---
+                    parsed['news_list'] = []
                     parsed['recent_news'] = "No"
 
-                # --- NEW: Last Dividend Info ---
-                last_div_date_ts = info.get('lastDividendDate') # This is usually a timestamp
+                last_div_date_ts = info.get('lastDividendDate')
                 last_div_value = info.get('lastDividendValue')
 
                 if last_div_date_ts and pd.notna(last_div_date_ts) and last_div_value:
                     parsed['last_dividend_date'] = pd.to_datetime(last_div_date_ts, unit='s').strftime('%Y-%m-%d')
                     parsed['last_dividend_value'] = last_div_value
                 else:
-                    # Fallback: check the history dataframe
                     divs = hist[hist['Dividends'] > 0]
                     if not divs.empty:
                         parsed['last_dividend_date'] = divs.index[-1].strftime('%Y-%m-%d')
@@ -713,7 +660,6 @@ def parse_ticker_data(data, ticker_symbol):
                     else:
                         parsed['last_dividend_date'] = "N/A"
                         parsed['last_dividend_value'] = np.nan
-                # --- END OF NEW DIVIDEND LOGIC ---
 
                 calendar = earnings_data.get('calendar', {})
                 if calendar and 'Earnings Date' in calendar and calendar['Earnings Date']:
@@ -726,17 +672,14 @@ def parse_ticker_data(data, ticker_symbol):
                  parsed['news_list'] = []
                  parsed['recent_news'] = "N/A"
                  parsed['next_earnings_date'] = "N/A"
-                 parsed['last_dividend_date'] = "N/A" # Add to error handler
-                 parsed['last_dividend_value'] = np.nan # Add to error handler
-        else:
-             parsed['news_list'] = [] # --- NEW ---
+                 parsed['last_dividend_date'] = "N/A"
+                 parsed['last_dividend_value'] = np.nan
+        else: # Alpha Vantage
+             parsed['news_list'] = []
              parsed['recent_news'] = "N/A (AV)"
              parsed['next_earnings_date'] = info.get('DividendDate', 'N/A (AV)') # Bad proxy
-             # --- NEW: Add dividend for AV ---
-             parsed['last_dividend_date'] = info.get('DividendDate', 'N/A (AV)') # AV's 'DividendDate' is often *last*
+             parsed['last_dividend_date'] = info.get('DividendDate', 'N/A (AV)')
              parsed['last_dividend_value'] = float(info.get('DividendPerShare', 'nan'))
-             # --- END OF NEW ---
-
 
         # --- 8. Risk Management (MODIFIED with Cut-Loss Filter) ---
         rm_config = CONFIG.get('RISK_MANAGEMENT', {})
@@ -766,16 +709,11 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['Stop Loss (Cut Loss)'] = stop_loss_price_cutloss
             
         # Determine Final Stop Loss
-        # Prefer the *tighter* (higher) stop between ATR and Cut-Loss
         if use_cut_loss_filter and pd.notna(stop_loss_price_atr) and pd.notna(stop_loss_price_cutloss):
-            final_stop_loss_price = max(stop_loss_price_atr, stop_loss_price_cutloss)
-            if final_stop_loss_price == stop_loss_price_cutloss:
-                parsed['SL_Method'] = "Cut-Loss"
-            else:
-                parsed['SL_Method'] = "ATR"
+            final_stop_loss_price = max(stop_loss_price_atr, stop_loss_price_cutloss) # Tighter stop
+            parsed['SL_Method'] = "Cut-Loss" if final_stop_loss_price == stop_loss_price_cutloss else "ATR"
             logging.info(f"[{ticker_symbol}] SL Filter: ATR ({stop_loss_price_atr:.2f}) vs CutLoss ({stop_loss_price_cutloss:.2f}). Chose: {parsed['SL_Method']}")
         
-        # Fallbacks if one is missing
         elif pd.notna(stop_loss_price_atr):
             final_stop_loss_price = stop_loss_price_atr
             parsed['SL_Method'] = "ATR"
@@ -793,23 +731,18 @@ def parse_ticker_data(data, ticker_symbol):
                 parsed['SL_Method'] = "10% Fallback"
 
         # --- Calculate Take Profit, R/R, and Position Size using FINAL Stop ---
-        
-        # First, define the risk_per_share based on the final_stop_loss_price
         if pd.notna(final_stop_loss_price) and final_stop_loss_price < last_price:
             risk_per_share = last_price - final_stop_loss_price
         else:
-            risk_per_share = np.nan # No valid stop found
+            risk_per_share = np.nan 
 
         if pd.notna(risk_per_share) and risk_per_share > 0:
-            # Calculate Fibonacci Take Profit (1.618 extension)
             take_profit_price = last_price + (risk_per_share * fib_target_mult)
             reward_per_share = take_profit_price - last_price
             
-            # Position Sizing
             position_size_shares = risk_per_trade_usd / risk_per_share
             position_size_usd = position_size_shares * last_price
             
-            # Final Metrics
             parsed['Stop Loss Price'] = final_stop_loss_price # For compatibility
             parsed['Final Stop Loss'] = final_stop_loss_price
             parsed['Take Profit Price'] = take_profit_price
@@ -819,7 +752,6 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['Position Size (USD)'] = position_size_usd
             parsed['Risk Per Trade (USD)'] = risk_per_trade_usd
         else:
-            # Set all to nan if no valid stop loss was found
             parsed['Stop Loss Price'] = np.nan
             parsed['Final Stop Loss'] = np.nan
             parsed['Take Profit Price'] = np.nan
@@ -831,7 +763,6 @@ def parse_ticker_data(data, ticker_symbol):
             if 'SL_Method' not in parsed:
                 parsed['SL_Method'] = "N/A"
         
-        # Fill missing ATR/CutLoss keys if they weren't calculated
         if 'Stop Loss (ATR)' not in parsed:
             parsed['Stop Loss (ATR)'] = np.nan
         if 'Stop Loss (Cut Loss)' not in parsed:
@@ -869,14 +800,12 @@ def process_ticker(ticker):
         # 2. Attempt Alpha Vantage Fallback
         logging.warning(f"[{ticker}] yfinance data invalid. Trying Alpha Vantage fallback.")
         
-        # *** CORRECTED FOR API KEY ROTATION ***
-        av_keys_list = CONFIG.get('DATA_PROVIDERS', {}).get('ALPHA_VANTAGE_API_KEYS', [])
+        av_keys_list = CONFIG.get('DATA_PROVIDERS', {}).get('ALPHA_VANTAGE_API_KEYS', []) # <-- FIX
         
         if not av_keys_list:
             logging.error(f"[{ticker}] Alpha Vantage fallback failed: No API keys found in config.json under ALPHA_VANTAGE_API_KEYS.")
             av_data = None
         else:
-            # Select a random key from the list
             selected_av_key = random.choice(av_keys_list)
             av_data = fetch_data_alpha_vantage(ticker, selected_av_key)
         
@@ -896,6 +825,7 @@ def process_ticker(ticker):
 
 
 # --- DEPRECATED FUNCTIONS (Kept for compatibility if old app calls them) ---
+# (These are unchanged)
 
 def calculate_support_resistance(hist_df):
     """DEPRECATED: Logic is now inside parse_ticker_data"""
@@ -913,7 +843,6 @@ def calculate_support_resistance(hist_df):
         
         high_low_diff = resistance_val - support_val
         fib_161_8_level = resistance_val + (high_low_diff * 0.618) if high_low_diff > 0 else None
-        # *** SYNTAX ERROR FIX: Added 'else None' ***
         fib_61_8_level = resistance_val - (high_low_diff * 0.618) if high_low_diff > 0 else None
         return support_val, support_date, resistance_val, resistance_date, fib_161_8_level, fib_161_8_level
     except Exception as e:
@@ -948,7 +877,6 @@ def calculate_financials_and_fair_price(ticker_obj, last_price, ticker):
             'Sector': sector,
             'Graham Number': graham_number,
             'Valuation (Graham)': valuation_signal,
-            # Other fields are missing as this is deprecated
         }
     except Exception as e:
         logging.error(f"Error in deprecated calculate_financials_and_fair_price for {ticker}: {e}")
