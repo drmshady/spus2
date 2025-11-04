@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v18.4 (Boolean Type-Casting Fix)
+SPUS Quantitative Analyzer v18.5 (Final Type-Casting Fix)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -9,10 +9,10 @@ SPUS Quantitative Analyzer v18.4 (Boolean Type-Casting Fix)
 - REWORKED: find_order_blocks for SMC (BOS, Mitigation, Validation).
 - FIXED: Replaced pandas_ta.pivothigh/low with scipy.signal.argrelextrema.
 - FIXED: Corrected logic in find_order_blocks.
-- FIXED: Added explicit type-casting (float, str) in parse_ticker_data.
-- FIXED: Corrected boolean casting for 'earnings_volatile' and 
-  'earnings_negative' to ensure they are always bool or np.nan, 
-  preventing pyarrow conversion errors.
+- FIXED: Hardened all type-casting in parse_ticker_data.
+- FIXED: Replaced np.nan with pd.NA for nullable boolean columns
+  ('earnings_volatile', 'earnings_negative') to fix all
+  pyarrow.lib.ArrowInvalid conversion errors.
 - ADDED: 'entry_signal' filter based on proximity to validated OBs.
 - MODIFIED: Risk logic to use dynamic 'Final Stop Loss' comparing
   ATR vs. 'Cut Loss' (last swing low).
@@ -144,8 +144,8 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
 
     # Base return object
     ob_data = {
-        'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bullish_ob_validated': False,
-        'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': False,
+        'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bullish_ob_validated': bool(False), # Force bool
+        'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': bool(False), # Force bool
         'last_swing_low': np.nan, 'last_swing_high': np.nan
     }
 
@@ -202,7 +202,7 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
                                 if not reaction_candles.empty:
                                     bounced = reaction_candles['High'].max() > first_bos_candle.High
                                     if bounced:
-                                        ob_data['bullish_ob_validated'] = True
+                                        ob_data['bullish_ob_validated'] = bool(True)
                                         logging.info(f"[{ticker}] Bullish OB was validated (mitigated and bounced).")
                             else:
                                  logging.info(f"[{ticker}] Bullish OB was invalidated (price closed below zone).")
@@ -241,7 +241,7 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
                                 if not reaction_candles.empty:
                                     bounced = reaction_candles['Low'].min() < first_bos_candle.Low
                                     if bounced:
-                                        ob_data['bearish_ob_validated'] = True
+                                        ob_data['bearish_ob_validated'] = bool(True)
                                         logging.info(f"[{ticker}] Bearish OB was validated (mitigated and bounced).")
                             else:
                                  logging.info(f"[{ticker}] Bearish OB was invalidated (price closed above zone).")
@@ -256,8 +256,8 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
         logging.warning(f"[{ticker}] Error in find_order_blocks: {e}", exc_info=True)
         # Return default structure on error
         ob_data_default = {
-            'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bullish_ob_validated': False,
-            'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': False,
+            'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bullish_ob_validated': bool(False),
+            'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': bool(False),
             'last_swing_low': np.nan, 'last_swing_high': np.nan
         }
         return ob_data_default
@@ -413,7 +413,7 @@ def parse_ticker_data(data, ticker_symbol):
     earnings_data = data['earnings_data']
     source = data['source']
     
-    parsed = {'ticker': ticker_symbol, 'success': True, 'source': str(source)} # Force string
+    parsed = {'ticker': str(ticker_symbol), 'success': bool(True), 'source': str(source)} # Force types
     parsed['data_warning'] = None
     
     try:
@@ -421,7 +421,7 @@ def parse_ticker_data(data, ticker_symbol):
         if not hist.index.is_unique:
              hist = hist[~hist.index.duplicated(keep='first')]
         last_price = hist['Close'].iloc[-1]
-        parsed['last_price'] = last_price
+        parsed['last_price'] = float(last_price)
     
         # --- 1. Value Factors (WITH TYPE CASTING) ---
         if source == "yfinance":
@@ -459,7 +459,7 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['marketCap'] = float(info.get('MarketCapitalization', 'nan'))
             parsed['Sector'] = str(info.get('Sector', 'Unknown')) # Force string
             parsed['enterpriseToEbitda'] = float(info.get('EVToEBITDA', 'nan'))
-            parsed['freeCashflow'] = None 
+            parsed['freeCashflow'] = np.nan
             parsed['trailingEps'] = float(info.get('EPS', 'nan'))
         
         # Derived Value Metrics
@@ -469,13 +469,15 @@ def parse_ticker_data(data, ticker_symbol):
         if pd.notna(parsed['priceToBook']) and parsed['priceToBook'] != 0 and pd.notna(last_price):
             bvps = last_price / parsed['priceToBook']
         
-        if pd.notna(parsed['trailingEps']) and pd.notna(bvps) and parsed['trailingEps'] > 0 and bvps > 0:
-            parsed['grahamNumber'] = (22.5 * parsed['trailingEps'] * bvps) ** 0.5
-            parsed['grahamValuation'] = "Undervalued (Graham)"
-        else:
-            parsed['grahamNumber'] = np.nan
-            parsed['grahamValuation'] = "N/A (Unprofitable)" if pd.notna(parsed['trailingEps']) and parsed['trailingEps'] <= 0 else "N/A (Missing Data)"
-        parsed['grahamValuation'] = str(parsed['grahamValuation']) # Force string
+        graham_str = "N/A (Missing Data)"
+        parsed['grahamNumber'] = np.nan
+        if pd.notna(parsed['trailingEps']) and pd.notna(bvps):
+            if parsed['trailingEps'] > 0 and bvps > 0:
+                parsed['grahamNumber'] = (22.5 * parsed['trailingEps'] * bvps) ** 0.5
+                graham_str = "Undervalued (Graham)" if last_price < parsed['grahamNumber'] else "Overvalued (Graham)"
+            else:
+                graham_str = "N/A (Unprofitable)"
+        parsed['grahamValuation'] = str(graham_str) # Force string
 
 
         # --- 2. Momentum Factors ---
@@ -527,7 +529,13 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['returnOnAssets'] = float(info.get('ReturnOnAssetsTTM', 'nan'))
             parsed['debtToEquity'] = float(info.get('DebtToEquityRatio', 'nan'))
 
-        # --- 3.5. Quality Booleans (FIXED) ---
+        # --- 3.5. Quality Booleans (FIXED with pd.NA) ---
+        eps_val_for_bool = parsed.get('trailingEps')
+        if pd.notna(eps_val_for_bool):
+            parsed['earnings_negative'] = bool(eps_val_for_bool < 0)
+        else:
+            parsed['earnings_negative'] = pd.NA # Use pandas Nullable Boolean
+            
         if source == "yfinance" and earnings_data.get("quarterly_earnings") is not None and not earnings_data["quarterly_earnings"].empty:
             quarterly_data = earnings_data["quarterly_earnings"]
             
@@ -543,22 +551,11 @@ def parse_ticker_data(data, ticker_symbol):
 
             if not q_eps.empty and q_eps.abs().mean() != 0:
                 cv = (q_eps.std() / q_eps.abs().mean())
-                # Explicitly check for nan before casting
-                parsed['earnings_volatile'] = bool(cv > 0.5) if pd.notna(cv) else np.nan
+                parsed['earnings_volatile'] = bool(cv > 0.5) if pd.notna(cv) else pd.NA
             else:
-                parsed['earnings_volatile'] = np.nan
-            
-            # Use the already-cleaned trailingEps
-            eps_val = parsed.get('trailingEps')
-            parsed['earnings_negative'] = bool(eps_val < 0) if pd.notna(eps_val) else np.nan
-        
-        else: # Alpha Vantage or no earnings data
-            parsed['earnings_volatile'] = np.nan
-            eps_val = parsed.get('trailingEps')
-            # --- THIS WAS THE BUG ---
-            # Explicitly cast to bool OR np.nan
-            parsed['earnings_negative'] = bool(eps_val < 0) if pd.notna(eps_val) else np.nan
-        
+                parsed['earnings_volatile'] = pd.NA
+        else:
+            parsed['earnings_volatile'] = pd.NA
             
         # --- 4. Size Factors (WITH TYPE CASTING) ---
         if source == "yfinance":
@@ -645,8 +642,8 @@ def parse_ticker_data(data, ticker_symbol):
         
         lookback = CONFIG.get('SR_LOOKBACK_PERIOD', 90)
         recent_hist = hist.iloc[-lookback:] if len(hist) >= lookback else hist
-        parsed['Support_90d'] = recent_hist['Low'].min()
-        parsed['Resistance_90d'] = recent_hist['High'].max()
+        parsed['Support_90d'] = float(recent_hist['Low'].min())
+        parsed['Resistance_90d'] = float(recent_hist['High'].max())
         
         support_90d = parsed.get('Support_90d')
         if pd.notna(support_90d) and pd.notna(last_price) and last_price > 0:
@@ -685,31 +682,35 @@ def parse_ticker_data(data, ticker_symbol):
         if source == "yfinance":
             try:
                 news = earnings_data.get('news', [])
+                news_str = "No"
                 if news:
                     parsed['news_list'] = [str(item.get('title', 'N/A')) for item in news[:5]]
                     now_ts = datetime.now().timestamp()
                     recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
-                    parsed['recent_news'] = "Yes" if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news) else "No"
+                    if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news):
+                        news_str = "Yes"
                 else:
                     parsed['news_list'] = []
-                    parsed['recent_news'] = "No"
-                
-                parsed['recent_news'] = str(parsed['recent_news']) # Force string
+                parsed['recent_news'] = str(news_str) # Force string
 
                 last_div_date_ts = info.get('lastDividendDate')
                 last_div_value = info.get('lastDividendValue')
+                
+                div_date_str = "N/A"
+                div_val_float = np.nan
 
                 if last_div_date_ts and pd.notna(last_div_date_ts) and last_div_value:
-                    parsed['last_dividend_date'] = pd.to_datetime(last_div_date_ts, unit='s').strftime('%Y-%m-%d')
-                    parsed['last_dividend_value'] = float(last_div_value)
+                    div_date_str = pd.to_datetime(last_div_date_ts, unit='s').strftime('%Y-%m-%d')
+                    div_val_float = float(last_div_value)
                 else:
                     divs = hist[hist['Dividends'] > 0]
                     if not divs.empty:
-                        parsed['last_dividend_date'] = divs.index[-1].strftime('%Y-%m-%d')
-                        parsed['last_dividend_value'] = float(divs['Dividends'].iloc[-1])
-                    else:
-                        parsed['last_dividend_date'] = "N/A"
-                        parsed['last_dividend_value'] = np.nan
+                        div_date_str = divs.index[-1].strftime('%Y-%m-%d')
+                        div_val_float = float(divs['Dividends'].iloc[-1])
+                
+                parsed['last_dividend_date'] = str(div_date_str)
+                parsed['last_dividend_value'] = float(div_val_float)
+
 
                 calendar = earnings_data.get('calendar', {})
                 date_val = "N/A"
@@ -752,17 +753,15 @@ def parse_ticker_data(data, ticker_symbol):
         
         if pd.notna(atr) and atr > 0:
             stop_loss_price_atr = last_price - (atr * atr_sl_mult)
-            parsed['Stop Loss (ATR)'] = stop_loss_price_atr
+            parsed['Stop Loss (ATR)'] = float(stop_loss_price_atr)
         
         if pd.notna(last_swing_low) and last_swing_low < last_price:
             stop_loss_price_cutloss = last_swing_low
-            parsed['Stop Loss (Cut Loss)'] = stop_loss_price_cutloss
+            parsed['Stop Loss (Cut Loss)'] = float(stop_loss_price_cutloss)
             
         if use_cut_loss_filter and pd.notna(stop_loss_price_atr) and pd.notna(stop_loss_price_cutloss):
             final_stop_loss_price = max(stop_loss_price_atr, stop_loss_price_cutloss) # Tighter stop
             sl_method_str = "Cut-Loss" if final_stop_loss_price == stop_loss_price_cutloss else "ATR"
-            logging.info(f"[{ticker_symbol}] SL Filter: ATR ({stop_loss_price_atr:.2f}) vs CutLoss ({stop_loss_price_cutloss:.2f}). Chose: {sl_method_str}")
-        
         elif pd.notna(stop_loss_price_atr):
             final_stop_loss_price = stop_loss_price_atr
             sl_method_str = "ATR"
@@ -791,14 +790,14 @@ def parse_ticker_data(data, ticker_symbol):
             position_size_shares = risk_per_trade_usd / risk_per_share
             position_size_usd = position_size_shares * last_price
             
-            parsed['Stop Loss Price'] = final_stop_loss_price 
-            parsed['Final Stop Loss'] = final_stop_loss_price
-            parsed['Take Profit Price'] = take_profit_price
-            parsed['Risk/Reward Ratio'] = reward_per_share / risk_per_share
-            parsed['Risk % (to Stop)'] = (risk_per_share / last_price) * 100
-            parsed['Position Size (Shares)'] = position_size_shares
-            parsed['Position Size (USD)'] = position_size_usd
-            parsed['Risk Per Trade (USD)'] = risk_per_trade_usd
+            parsed['Stop Loss Price'] = float(final_stop_loss_price)
+            parsed['Final Stop Loss'] = float(final_stop_loss_price)
+            parsed['Take Profit Price'] = float(take_profit_price)
+            parsed['Risk/Reward Ratio'] = float(reward_per_share / risk_per_share)
+            parsed['Risk % (to Stop)'] = float((risk_per_share / last_price) * 100)
+            parsed['Position Size (Shares)'] = float(position_size_shares)
+            parsed['Position Size (USD)'] = float(position_size_usd)
+            parsed['Risk Per Trade (USD)'] = float(risk_per_trade_usd)
         else:
             parsed['Stop Loss Price'] = np.nan
             parsed['Final Stop Loss'] = np.nan
@@ -807,19 +806,33 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['Risk % (to Stop)'] = np.nan
             parsed['Position Size (Shares)'] = np.nan
             parsed['Position Size (USD)'] = np.nan
-            parsed['Risk Per Trade (USD)'] = risk_per_trade_usd
+            parsed['Risk Per Trade (USD)'] = float(risk_per_trade_usd)
         
         if 'Stop Loss (ATR)' not in parsed:
             parsed['Stop Loss (ATR)'] = np.nan
         if 'Stop Loss (Cut Loss)' not in parsed:
-            parsed['Stop Loss (Cut Loss)'] = np.nan
+            parsed['Stop Loss (Cut Loss)']C = np.nan
+            
+        # --- Final Type Check ---
+        # Ensure all list-like objects are removed before returning
+        if 'hist_df' in parsed:
+            del parsed['hist_df']
+        if 'news_list' in parsed:
+            del parsed['news_list'] # This was the problem, it's a list
+            
+        # Re-add news_list as a flat string
+        news_list_str = data.get('earnings_data', {}).get('news', [])
+        if news_list_str:
+            parsed['news_list'] = ", ".join([str(item.get('title', 'N/A')) for item in news_list_str[:5]])
+        else:
+            parsed['news_list'] = "N/A"
 
         return parsed
         
     except Exception as e:
         logging.error(f"[{ticker_symbol}] Fatal error in parse_ticker_data: {e}", exc_info=True)
-        parsed['success'] = False
-        return parsed
+        # Return a flat dict
+        return {'ticker': str(ticker_symbol), 'success': bool(False), 'error': str(e)}
 
 
 # --- MAIN PROCESS FUNCTION ---
@@ -859,7 +872,8 @@ def process_ticker(ticker):
             data_to_parse = av_data
         else:
             logging.error(f"[{ticker}] All data providers failed or returned invalid data.")
-            return {'ticker': ticker, 'success': False, 'error': 'All data providers failed'}
+            # Return a flat dict
+            return {'ticker': str(ticker), 'success': bool(False), 'error': 'All data providers failed'}
             
     # 3. Parse and Calculate
     try:
@@ -867,7 +881,7 @@ def process_ticker(ticker):
         return parsed_data
     except Exception as e:
         logging.critical(f"[{ticker}] Unhandled exception in parse_ticker_data: {e}", exc_info=True)
-        return {'ticker': ticker, 'success': False, 'error': f'Parsing error: {e}'}
+        return {'ticker': str(ticker), 'success': bool(False), 'error': f'Parsing error: {e}'}
 
 
 # --- DEPRECATED FUNCTIONS (Kept for compatibility) ---
