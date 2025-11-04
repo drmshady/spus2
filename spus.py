@@ -1,18 +1,20 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v18.5 (Final Type-Casting Fix)
+SPUS Quantitative Analyzer v18.7 (Combined Fix)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
 - Includes robust data fetching for tickers and fundamentals.
-- Modular functions to be called by analysis script.
 - REWORKED: find_order_blocks for SMC (BOS, Mitigation, Validation).
 - FIXED: Replaced pandas_ta.pivothigh/low with scipy.signal.argrelextrema.
 - FIXED: Corrected logic in find_order_blocks.
 - FIXED: Hardened all type-casting in parse_ticker_data.
-- FIXED: Replaced np.nan with pd.NA for nullable boolean columns
+- FIXED: Re-applied pd.NA fix for nullable boolean columns
   ('earnings_volatile', 'earnings_negative') to fix all
   pyarrow.lib.ArrowInvalid conversion errors.
+- FIXED: Removed 'hist_df' and flattened 'news_list' from the
+  parsed dictionary to ensure the final DataFrame is flat.
+- FIXED: Removed SyntaxError typo ('C') in risk management section.
 - ADDED: 'entry_signal' filter based on proximity to validated OBs.
 - MODIFIED: Risk logic to use dynamic 'Final Stop Loss' comparing
   ATR vs. 'Cut Loss' (last swing low).
@@ -474,7 +476,8 @@ def parse_ticker_data(data, ticker_symbol):
         if pd.notna(parsed['trailingEps']) and pd.notna(bvps):
             if parsed['trailingEps'] > 0 and bvps > 0:
                 parsed['grahamNumber'] = (22.5 * parsed['trailingEps'] * bvps) ** 0.5
-                graham_str = "Undervalued (Graham)" if last_price < parsed['grahamNumber'] else "Overvalued (Graham)"
+                if pd.notna(parsed['grahamNumber']):
+                    graham_str = "Undervalued (Graham)" if last_price < parsed['grahamNumber'] else "Overvalued (Graham)"
             else:
                 graham_str = "N/A (Unprofitable)"
         parsed['grahamValuation'] = str(graham_str) # Force string
@@ -638,7 +641,7 @@ def parse_ticker_data(data, ticker_symbol):
         parsed['MACD_Signal'] = str(macd_str) # Force string
 
         # --- 7. Other Info ---
-        parsed['hist_df'] = hist # For plotly charts
+        # ** hist_df is NOT added to parsed dict **
         
         lookback = CONFIG.get('SR_LOOKBACK_PERIOD', 90)
         recent_hist = hist.iloc[-lookback:] if len(hist) >= lookback else hist
@@ -683,14 +686,17 @@ def parse_ticker_data(data, ticker_symbol):
             try:
                 news = earnings_data.get('news', [])
                 news_str = "No"
+                news_list_str = "N/A"
                 if news:
-                    parsed['news_list'] = [str(item.get('title', 'N/A')) for item in news[:5]]
+                    news_titles = [str(item.get('title', 'N/A')) for item in news[:5]]
+                    news_list_str = ", ".join(news_titles) # Flatten list to string
+                    
                     now_ts = datetime.now().timestamp()
                     recent_news_ts = now_ts - (CONFIG.get('NEWS_LOOKBACK_HOURS', 48) * 3600)
                     if any(item.get('providerPublishTime', 0) > recent_news_ts for item in news):
                         news_str = "Yes"
-                else:
-                    parsed['news_list'] = []
+                
+                parsed['news_list'] = str(news_list_str) # Force string
                 parsed['recent_news'] = str(news_str) # Force string
 
                 last_div_date_ts = info.get('lastDividendDate')
@@ -721,13 +727,13 @@ def parse_ticker_data(data, ticker_symbol):
 
             except Exception as e:
                  logging.warning(f"[{ticker_symbol}] Error parsing news/calendar: {e}")
-                 parsed['news_list'] = []
+                 parsed['news_list'] = "N/A"
                  parsed['recent_news'] = "N/A"
                  parsed['next_earnings_date'] = "N/A"
                  parsed['last_dividend_date'] = "N/A"
                  parsed['last_dividend_value'] = np.nan
         else: # Alpha Vantage
-             parsed['news_list'] = []
+             parsed['news_list'] = "N/A"
              parsed['recent_news'] = "N/A (AV)"
              parsed['next_earnings_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_date'] = str(info.get('DividendDate', 'N/A (AV)'))
@@ -793,8 +799,8 @@ def parse_ticker_data(data, ticker_symbol):
             parsed['Stop Loss Price'] = float(final_stop_loss_price)
             parsed['Final Stop Loss'] = float(final_stop_loss_price)
             parsed['Take Profit Price'] = float(take_profit_price)
-            parsed['Risk/Reward Ratio'] = float(reward_per_share / risk_per_share)
-            parsed['Risk % (to Stop)'] = float((risk_per_share / last_price) * 100)
+            parsed['Risk/Reward Ratio'] = float(reward_per_share / risk_per_share) if risk_per_share != 0 else np.nan
+            parsed['Risk % (to Stop)'] = float((risk_per_share / last_price) * 100) if last_price != 0 else np.nan
             parsed['Position Size (Shares)'] = float(position_size_shares)
             parsed['Position Size (USD)'] = float(position_size_usd)
             parsed['Risk Per Trade (USD)'] = float(risk_per_trade_usd)
@@ -811,21 +817,14 @@ def parse_ticker_data(data, ticker_symbol):
         if 'Stop Loss (ATR)' not in parsed:
             parsed['Stop Loss (ATR)'] = np.nan
         if 'Stop Loss (Cut Loss)' not in parsed:
+            # --- THIS IS THE FIXED TYPO ---
             parsed['Stop Loss (Cut Loss)'] = np.nan
             
         # --- Final Type Check ---
-        # Ensure all list-like objects are removed before returning
+        # Remove any non-flat data. 
         if 'hist_df' in parsed:
-            del parsed['hist_df']
-        if 'news_list' in parsed:
-            del parsed['news_list'] # This was the problem, it's a list
-            
-        # Re-add news_list as a flat string
-        news_list_str = data.get('earnings_data', {}).get('news', [])
-        if news_list_str:
-            parsed['news_list'] = ", ".join([str(item.get('title', 'N/A')) for item in news_list_str[:5]])
-        else:
-            parsed['news_list'] = "N/A"
+            # This is the DataFrame, which is handled separately
+            del parsed['hist_df'] 
 
         return parsed
         
@@ -845,11 +844,14 @@ def process_ticker(ticker):
     """
     if CONFIG is None:
         logging.error(f"process_ticker ({ticker}): CONFIG is None.")
-        return {'ticker': ticker, 'success': False, 'error': 'Config not loaded'}
+        return {'ticker': str(ticker), 'success': bool(False), 'error': 'Config not loaded'}
         
     # 1. Attempt yfinance
     ticker_obj = yf.Ticker(ticker)
     yf_data = fetch_data_yfinance(ticker_obj)
+    
+    # --- This is the one object that needs to be passed ---
+    hist_df_for_storage = yf_data.get('hist') if yf_data else None
     
     data_to_parse = None
     
@@ -870,6 +872,8 @@ def process_ticker(ticker):
         
         if is_data_valid(av_data, source="alpha_vantage"):
             data_to_parse = av_data
+            if hist_df_for_storage is None: # Use AV hist if yf hist failed
+                 hist_df_for_storage = av_data.get('hist')
         else:
             logging.error(f"[{ticker}] All data providers failed or returned invalid data.")
             # Return a flat dict
@@ -878,7 +882,14 @@ def process_ticker(ticker):
     # 3. Parse and Calculate
     try:
         parsed_data = parse_ticker_data(data_to_parse, ticker)
+        
+        # --- Add the hist_df back in for storage ---
+        # This one dict is handled by the main app logic
+        if hist_df_for_storage is not None:
+             parsed_data['hist_df'] = hist_df_for_storage
+            
         return parsed_data
+        
     except Exception as e:
         logging.critical(f"[{ticker}] Unhandled exception in parse_ticker_data: {e}", exc_info=True)
         return {'ticker': str(ticker), 'success': bool(False), 'error': f'Parsing error: {e}'}
