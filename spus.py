@@ -369,7 +369,7 @@ def fetch_data_yfinance(ticker_obj):
             "earnings": ticker_obj.income_stmt,
             "quarterly_earnings": ticker_obj.quarterly_income_stmt,
             "calendar": ticker_obj.calendar,
-            "news": ticker_obj.news
+            "news": ticker_obj.get_news() # <-- ✅ THIS IS THE FIX
         }
         
         if hist.empty or info is None:
