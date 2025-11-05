@@ -488,9 +488,11 @@ def get_latest_reports(excel_base_path):
     excel_path = excel_base_path if os.path.exists(excel_base_path) else None
     return excel_path, latest_pdf
 
-def create_price_chart(hist_df, ticker):
-    """Creates an interactive Plotly Price Chart with SMAs and MACD."""
+# --- ✅ MODIFIED FUNCTION ---
+def create_price_chart(hist_df, ticker_data): # <-- MODIFIED SIGNATURE
+    """Creates an interactive Plotly Price Chart with SMAs, MACD, and OB Zones."""
     
+    ticker = ticker_data.name # <-- Get ticker from data
     cfg = CONFIG['TECHNICALS']
     short_ma_col = f'SMA_{cfg["SHORT_MA_WINDOW"]}'
     long_ma_col = f'SMA_{cfg["LONG_MA_WINDOW"]}'
@@ -531,6 +533,65 @@ def create_price_chart(hist_df, ticker):
                              line=dict(color='orange', width=1), name='Signal'),
                   row=2, col=1)
 
+    # --- ✅ NEW: Add Key Price Zones ---
+    
+    # Get data from the series
+    b_ob_low = ticker_data.get('bullish_ob_low', np.nan)
+    b_ob_high = ticker_data.get('bullish_ob_high', np.nan)
+    be_ob_low = ticker_data.get('bearish_ob_low', np.nan)
+    be_ob_high = ticker_data.get('bearish_ob_high', np.nan)
+    last_sl = ticker_data.get('last_swing_low', np.nan)
+    last_sh = ticker_data.get('last_swing_high', np.nan)
+    
+    # Get the date range of the chart
+    chart_start_date = hist_df.index.min()
+    chart_end_date = hist_df.index.max()
+
+    # 1. Bullish OB (Demand Zone) - Green Rectangle
+    if pd.notna(b_ob_low) and pd.notna(b_ob_high):
+        fig.add_shape(
+            type="rect",
+            x0=chart_start_date, y0=b_ob_low,
+            x1=chart_end_date, y1=b_ob_high,
+            line=dict(width=0),
+            fillcolor="rgba(0, 255, 0, 0.2)", # Green, 20% opacity
+            layer="below",
+            row=1, col=1
+        )
+
+    # 2. Bearish OB (Supply Zone) - Red Rectangle
+    if pd.notna(be_ob_low) and pd.notna(be_ob_high):
+        fig.add_shape(
+            type="rect",
+            x0=chart_start_date, y0=be_ob_low,
+            x1=chart_end_date, y1=be_ob_high,
+            line=dict(width=0),
+            fillcolor="rgba(255, 0, 0, 0.2)", # Red, 20% opacity
+            layer="below",
+            row=1, col=1
+        )
+
+    # 3. Last Swing Low (Support) - Dotted Blue Line
+    if pd.notna(last_sl):
+        fig.add_hline(
+            y=last_sl,
+            line=dict(color="blue", width=1, dash="dot"),
+            annotation_text="Swing Low",
+            annotation_position="bottom right",
+            row=1, col=1
+        )
+
+    # 4. Last Swing High (Resistance) - Dotted Red Line
+    if pd.notna(last_sh):
+        fig.add_hline(
+            y=last_sh,
+            line=dict(color="red", width=1, dash="dot"),
+            annotation_text="Swing High",
+            annotation_position="top right",
+            row=1, col=1
+        )
+    # --- ✅ END OF NEW CODE ---
+    
     fig.update_layout(
         title_text=f"{ticker} Technical Chart",
         xaxis_rangeslider_visible=False,
@@ -1015,6 +1076,7 @@ def main():
         st.header("🏆 Top Stocks by Final Quant Score")
         st.info("Click a ticker to select it and automatically move to the 'Ticker Deep Dive' tab.")
         
+        # --- ✅ MODIFIED: Updated 5-step guide ---
         with st.expander("How to Find a Good Buy Signal (5-Step Guide)", expanded=False):
             st.markdown("""
                 This 5-step method helps you use the app to find suitable buying opportunities.
@@ -1261,7 +1323,8 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     with chart_col1:
         st.subheader("Price Chart & Technicals")
         if hist_data is not None:
-            price_chart = create_price_chart(hist_data, selected_ticker)
+            # --- ✅ MODIFIED: Pass ticker_data to the chart function ---
+            price_chart = create_price_chart(hist_data, ticker_data)
             st.plotly_chart(price_chart, use_container_width=True)
         else:
             st.error("Historical data not found for this ticker.")
