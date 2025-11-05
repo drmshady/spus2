@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v19.0 (SMC / BOS / FVG Upgrade)
+SPUS Quantitative Analyzer v19.1 (Add Ex-Dividend Date)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
@@ -23,6 +23,7 @@ SPUS Quantitative Analyzer v19.0 (SMC / BOS / FVG Upgrade)
 - ADDED: pct_above_cutloss metric for filtering.
 - FIXED: All failure-path return dictionaries to include default booleans,
   preventing pyarrow crashes in streamlit.
+- ADDED: 'next_ex_dividend_date' to parse_ticker_data.
 """
 
 import requests
@@ -795,6 +796,17 @@ def parse_ticker_data(data, ticker_symbol):
                     date_val = pd.to_datetime(raw_date).strftime('%Y-%m-%d') if pd.notna(raw_date) else "N/A"
                 parsed['next_earnings_date'] = str(date_val) # Force string
 
+                # --- ✅ START NEW CODE ---
+                # Get Next Ex-Dividend Date
+                next_ex_div_ts = info.get('exDividendDate')
+                ex_div_date_str = "N/A"
+                if next_ex_div_ts and pd.notna(next_ex_div_ts):
+                    # Check if it's in the future
+                    if next_ex_div_ts > datetime.now().timestamp():
+                        ex_div_date_str = pd.to_datetime(next_ex_div_ts, unit='s').strftime('%Y-%m-%d')
+                parsed['next_ex_dividend_date'] = str(ex_div_date_str)
+                # --- ✅ END NEW CODE ---
+
             except Exception as e:
                  logging.warning(f"[{ticker_symbol}] Error parsing news/calendar: {e}")
                  parsed['news_list'] = "N/A"
@@ -802,12 +814,14 @@ def parse_ticker_data(data, ticker_symbol):
                  parsed['next_earnings_date'] = "N/A"
                  parsed['last_dividend_date'] = "N/A"
                  parsed['last_dividend_value'] = np.nan
+                 parsed['next_ex_dividend_date'] = "N/A" # <-- ✅ ADDED
         else: # Alpha Vantage
              parsed['news_list'] = "N/A"
              parsed['recent_news'] = "N/A (AV)"
              parsed['next_earnings_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_date'] = str(info.get('DividendDate', 'N/A (AV)'))
              parsed['last_dividend_value'] = float(info.get('DividendPerShare', 'nan'))
+             parsed['next_ex_dividend_date'] = str(info.get('ExDividendDate', 'N/A (AV)')) # <-- ✅ ADDED
 
         # --- 8. Risk Management (MODIFIED with Cut-Loss Filter) ---
         rm_config = CONFIG.get('RISK_MANAGEMENT', {})
@@ -918,11 +932,11 @@ def parse_ticker_data(data, ticker_symbol):
             'bearish_ob_validated': bool(False),
             'earnings_negative': bool(False),
             'earnings_volatile': bool(False),
-            # --- ADD THESE 4 LINES ---
             'bullish_ob_fvg': bool(False),
             'bullish_ob_volume_ok': bool(False),
             'bearish_ob_fvg': bool(False),
-            'bearish_ob_volume_ok': bool(False)
+            'bearish_ob_volume_ok': bool(False),
+            'next_ex_dividend_date': 'N/A' # <-- ✅ ADDED
         }
 
 
@@ -948,7 +962,8 @@ def process_ticker(ticker):
             'bullish_ob_fvg': bool(False),
             'bullish_ob_volume_ok': bool(False),
             'bearish_ob_fvg': bool(False),
-            'bearish_ob_volume_ok': bool(False)
+            'bearish_ob_volume_ok': bool(False),
+            'next_ex_dividend_date': 'N/A' # <-- ✅ ADDED
         }
         
     # 1. Attempt yfinance
@@ -993,7 +1008,8 @@ def process_ticker(ticker):
                 'bullish_ob_fvg': bool(False),
                 'bullish_ob_volume_ok': bool(False),
                 'bearish_ob_fvg': bool(False),
-                'bearish_ob_volume_ok': bool(False)
+                'bearish_ob_volume_ok': bool(False),
+                'next_ex_dividend_date': 'N/A' # <-- ✅ ADDED
             }
             
     # 3. Parse and Calculate
@@ -1021,7 +1037,8 @@ def process_ticker(ticker):
             'bullish_ob_fvg': bool(False),
             'bullish_ob_volume_ok': bool(False),
             'bearish_ob_fvg': bool(False),
-            'bearish_ob_volume_ok': bool(False)
+            'bearish_ob_volume_ok': bool(False),
+            'next_ex_dividend_date': 'N/A' # <-- ✅ ADDED
         }
 
 
