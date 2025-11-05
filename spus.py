@@ -781,5 +781,15 @@ def calculate_financials_and_fair_price(ticker_obj, last_price, ticker):
             # Other fields are missing as this is deprecated
         }
     except Exception as e:
-        logging.error(f"Error in deprecated calculate_financials_and_fair_price for {ticker}: {e}")
-        return {'Sector': 'Error', 'Valuation (Graham)': 'Error'}
+        logging.error(f"[{ticker_symbol}] Fatal error in parse_ticker_data: {e}", exc_info=True)
+        # Return a flat dict
+        return {
+            'ticker': str(ticker_symbol), 
+            'success': bool(False), 
+            'error': str(e),
+            # --- ADD THESE 4 LINES ---
+            'bullish_ob_validated': bool(False),
+            'bearish_ob_validated': bool(False),
+            'earnings_negative': bool(False),
+            'earnings_volatile': bool(False)
+        }
