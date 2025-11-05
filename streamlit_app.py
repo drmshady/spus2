@@ -1428,9 +1428,18 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     
     st.divider() 
     
-    st.subheader("Valuation")
-    val_col1, _, _ = st.columns(3)
+    # --- ✅ MODIFIED SECTION ---
+    st.subheader("Valuation & Key Dates")
+    val_col1, val_col2, val_col3 = st.columns(3)
+    
     val_col1.metric("Valuation (Graham)", ticker_data['grahamValuation'])
+    
+    next_earnings = ticker_data.get('next_earnings_date', 'N/A')
+    val_col2.metric("Next Earnings Date", next_earnings)
+    
+    next_dividend = ticker_data.get('next_ex_dividend_date', 'N/A')
+    val_col3.metric("Next Ex-Dividend Date", next_dividend, help="تاريخ الأحقية القادم لتوزيع الأرباح")
+    # --- ✅ END MODIFIED SECTION ---
     
     # --- ✅ FIX: Convert to string to prevent Arrow error ---
     with st.expander("View All Raw Data for " + selected_ticker):
