@@ -1296,7 +1296,7 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     val_col1.metric("Valuation (Graham)", ticker_data['grahamValuation'])
     
     with st.expander("View All Raw Data for " + selected_ticker):
-        st.dataframe(ticker_data)
+        st.dataframe(ticker_data.astype(str))
 # --- ⭐️ END OF NEW HELPER FUNCTION ⭐️ ---
 
 
