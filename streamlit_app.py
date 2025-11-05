@@ -578,7 +578,7 @@ def display_buy_signal_checklist(ticker_data):
     Displays a 4-step checklist on the Ticker Deep Dive tab,
     showing which buy criteria are met.
     
-    --- MODIFIED to include Entry Signal ---
+    --- MODIFIED to include Entry Signal, FVG, and Volume ---
     """
     
     SCORE_THRESHOLD = 1.0
@@ -603,20 +603,26 @@ def display_buy_signal_checklist(ticker_data):
         step2_met = True
     step2_details = f"Value: {z_value:.2f}, Quality: {z_quality:.2f}"
 
-    # --- NEW: Step 3: SMC Entry Signal ---
+    # --- ✅ NEW: Step 3: SMC Entry Signal ---
     step3_met = False
     step3_text = "**3. SMC Entry Signal**"
     entry_signal = ticker_data.get('entry_signal', 'No Trade')
+    has_fvg = ticker_data.get('bullish_ob_fvg', False)
+    has_vol = ticker_data.get('bullish_ob_volume_ok', False)
     
+    details = []
     if entry_signal == 'Buy near Bullish OB':
         step3_met = True
-        step3_details = f"Signal: {entry_signal}"
+        details.append(f"Signal: {entry_signal}")
     elif entry_signal == 'Sell near Bearish OB':
-        step3_met = False # This is a *Buy* checklist
-        step3_details = f"Signal: {entry_signal}"
+        details.append(f"Signal: {entry_signal}")
     else:
-        step3_met = False
-        step3_details = "Signal: No Trade"
+        details.append("Signal: No Trade")
+
+    details.append(f"FVG: {'✅' if has_fvg else '❌'}")
+    details.append(f"Vol: {'✅' if has_vol else '❌'}")
+    
+    step3_details = ", ".join(details)
         
     # Step 4: Risk/Reward
     step4_met = False
@@ -899,18 +905,24 @@ def main():
     filt_col5, _ = st.columns(2) # Use first col, leave second blank
 
     if 'pct_above_cutloss' in df.columns and not df['pct_above_cutloss'].isnull().all():
-        min_pct = float(df['pct_above_cutloss'].min())
-        max_pct = float(df['pct_above_cutloss'].max())
-        default_min_pct = max(0.0, min_pct) # Start filter at 0% or higher
-        if min_pct >= max_pct: max_pct = min_pct + 10.0
-        
-        support_range = filt_col5.slider(
-            "Filter by % Above Cut Loss (Swing Low):", # <-- MODIFIED LABEL
-            min_value=min_pct, 
-            max_value=max_pct,
-            value=(default_min_pct, max_pct),
-            format="%.1f%%"
-        )
+        # Filter out NaNs before finding min/max
+        valid_pct_data = df['pct_above_cutloss'].dropna()
+        if not valid_pct_data.empty:
+            min_pct = float(valid_pct_data.min())
+            max_pct = float(valid_pct_data.max())
+            default_min_pct = max(0.0, min_pct) # Start filter at 0% or higher
+            if min_pct >= max_pct: max_pct = min_pct + 10.0
+            
+            support_range = filt_col5.slider(
+                "Filter by % Above Cut Loss (Swing Low):", # <-- MODIFIED LABEL
+                min_value=min_pct, 
+                max_value=max_pct,
+                value=(default_min_pct, max_pct),
+                format="%.1f%%"
+            )
+        else:
+            filt_col5.info("No Cut Loss % data to filter.")
+            support_range = (0.0, 0.0)
     else:
         filt_col5.info("No Cut Loss % data to filter.")
         support_range = (0.0, 0.0)
@@ -993,11 +1005,10 @@ def main():
                 This helps you buy stocks that match your strategy.
                 
                 ### 3. Check the SMC Signal & Technicals (The "When")
-                On the **"Deep Dive"** tab, look at the **"Key Metrics"** and **"Price Chart"**.
-                * **Entry Signal:** Does it show **"Buy near Bullish OB"**? This is your key SMC signal.
+                On the **"Deep Dive"** tab, look at the **"Buy Signal Checklist"** and **"Key Price Zones"**.
+                * **Entry Signal:** Does it show **"Buy near Bullish OB"**?
+                * **FVG / Vol:** Does the checklist show a `✅` for **FVG** (Fair Value Gap) and **Vol** (BOS Volume)? This confirms a high-quality signal.
                 * **Trend (50/200 Day MA):** Is the trend "Confirmed Uptrend"?
-                * **RSI/MACD:** Are the technical signals (`RSI`, `MACD_Signal`) favorable 
-                    (e.g., not "overbought" or "bearish")?
                 
                 ### 4. Check the Risk & Sizing (The "How")
                 In the **"Risk & Position Sizing"** section, check the:
@@ -1202,16 +1213,18 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
 
     # --- NEW: Latest News Section ---
     st.subheader("Latest News")
-    news_list = ticker_data.get('news_list', [])
+    news_list_str = ticker_data.get('news_list', 'N/A')
     has_recent_news = ticker_data.get('recent_news', 'No') == 'Yes'
     
     if has_recent_news:
         st.markdown("🔥 **Recent News Detected (Last 48h)**")
 
-    if not news_list:
+    if news_list_str == "N/A" or not news_list_str:
         st.info("No news headlines found.")
     else:
         with st.expander("View Latest Headlines", expanded=False):
+            # News is already a comma-separated string
+            news_list = news_list_str.split(", ")
             for i, headline in enumerate(news_list):
                 st.markdown(f"- {headline}")
     # --- END OF NEW ---
@@ -1294,29 +1307,35 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     b_ob_low = ticker_data.get('bullish_ob_low', np.nan)
     b_ob_high = ticker_data.get('bullish_ob_high', np.nan)
     b_ob_validated = ticker_data.get('bullish_ob_validated', False)
-    b_ob_label = f"{'✅' if b_ob_validated else '❌'} Bullish OB (Demand)"
+    b_ob_fvg = ticker_data.get('bullish_ob_fvg', False)
+    b_ob_vol = ticker_data.get('bullish_ob_volume_ok', False)
+    
+    b_ob_label = f"{'✅ Mitigated' if b_ob_validated else 'Fresh'} Bullish OB"
     b_ob_display = f"${b_ob_low:.2f} - ${b_ob_high:.2f}" if pd.notna(b_ob_low) else "N/A"
-    zone_cols[0].metric(b_ob_label, b_ob_display, 
-                        help="SMC OB: Last down-cluster before Break of Structure (BOS). ✅ = Validated (Mitigated & Bounced).")
+    b_ob_help = f"FVG: {'Yes' if b_ob_fvg else 'No'} | BOS Vol: {'High' if b_ob_vol else 'Low'}"
+    zone_cols[0].metric(b_ob_label, b_ob_display, help=b_ob_help)
     
     # 2. Bearish Order Block (NEW)
     be_ob_low = ticker_data.get('bearish_ob_low', np.nan)
     be_ob_high = ticker_data.get('bearish_ob_high', np.nan)
     be_ob_validated = ticker_data.get('bearish_ob_validated', False)
-    be_ob_label = f"{'✅' if be_ob_validated else '❌'} Bearish OB (Supply)"
-    be_ob_display = f"${be_ob_high:.2f} - ${be_ob_low:.2f}" if pd.notna(be_ob_low) else "N/A"
-    zone_cols[1].metric(be_ob_label, be_ob_display, 
-                        help="SMC OB: Last up-cluster before Break of Structure (BOS). ✅ = Validated (Mitigated & Bounced).")
+    be_ob_fvg = ticker_data.get('bearish_ob_fvg', False)
+    be_ob_vol = ticker_data.get('bearish_ob_volume_ok', False)
     
-    # 3. Support (This data existed but wasn't shown)
-    support = ticker_data.get('Support_90d', np.nan)
+    be_ob_label = f"{'✅ Mitigated' if be_ob_validated else 'Fresh'} Bearish OB"
+    be_ob_display = f"${be_ob_high:.2f} - ${be_ob_low:.2f}" if pd.notna(be_ob_low) else "N/A"
+    be_ob_help = f"FVG: {'Yes' if be_ob_fvg else 'No'} | BOS Vol: {'High' if be_ob_vol else 'Low'}"
+    zone_cols[1].metric(be_ob_label, be_ob_display, help=be_ob_help)
+    
+    # 3. Support (Using new SMC data)
+    support = ticker_data.get('last_swing_low', np.nan)
     support_display = f"${support:.2f}" if pd.notna(support) else "N/A"
-    zone_cols[2].metric("Support (90d Low)", support_display)
+    zone_cols[2].metric("Last Swing Low", support_display)
 
-    # 4. Resistance (This data existed but wasn't shown)
-    resistance = ticker_data.get('Resistance_90d', np.nan)
+    # 4. Resistance (Using new SMC data)
+    resistance = ticker_data.get('last_swing_high', np.nan)
     resistance_display = f"${resistance:.2f}" if pd.notna(resistance) else "N/A"
-    zone_cols[3].metric("Resistance (90d High)", resistance_display)
+    zone_cols[3].metric("Last Swing High", resistance_display)
     # --- ⭐️ END OF MODIFIED Section ⭐️ ---
     
     st.divider() 
