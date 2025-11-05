@@ -1453,7 +1453,7 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     
     be_ob_label = f"{'✅ Mitigated' if be_ob_validated else 'Fresh'} Bearish OB"
     be_ob_display = f"${be_ob_high:.2f} - ${be_ob_low:.2f}" if pd.notna(be_ob_low) else "N/A"
-    be_ob_help = f"FVG: {'Yes' if b_ob_fvg else 'No'} | BOS Vol: {'High' if b_ob_vol else 'Low'}"
+    be_ob_help = f"FVG: {'Yes' if be_ob_fvg else 'No'} | BOS Vol: {'High' if be_ob_vol else 'Low'}"
     zone_cols[1].metric(be_ob_label, be_ob_display, help=be_ob_help)
     
     # 3. Support (Using new SMC data)
@@ -1637,6 +1637,14 @@ def display_portfolio_tab(all_data_df):
     selected_ticker = st.selectbox("Select a position to analyze:", options=tickers_in_portfolio)
     
     if selected_ticker:
+        
+        # --- ✅ NEW: Add Deep Dive Button ---
+        if st.button(f"🔬 Go to Deep Dive for {selected_ticker}", key=f"deep_dive_port_{selected_ticker}"):
+            st.session_state.selected_ticker = selected_ticker
+            st.session_state.active_tab = "🔬 Ticker Deep Dive"
+            st.rerun()
+        # --- ✅ END NEW BUTTON ---
+
         # Find the full position and ticker data
         position_data = next(p for p in st.session_state.portfolio if p['ticker'] == selected_ticker)
         ticker_data = all_data_df.loc[selected_ticker]
