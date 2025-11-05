@@ -634,6 +634,40 @@ def create_radar_chart(ticker_data, factor_cols):
     )
     return fig
 
+# --- ✅ NEW FUNCTION ---
+def create_portfolio_treemap(pl_df):
+    """
+    Creates a Plotly Treemap to visualize portfolio allocation and performance.
+    """
+    if pl_df.empty:
+        return go.Figure().update_layout(title_text="Portfolio Treemap (No data)")
+
+    # Ensure 'Sector' exists, fill if not (should not happen with new logic)
+    if 'Sector' not in pl_df.columns:
+        pl_df['Sector'] = "Unknown"
+        
+    # Create the treemap
+    fig = px.treemap(
+        pl_df,
+        path=[px.Constant("My Portfolio"), 'Sector', 'Ticker'],  # Hierarchy: All -> Sector -> Ticker
+        values='Market Value',
+        color='P/L (%)',
+        color_continuous_scale='RdYlGn',  # Red -> Yellow -> Green
+        color_continuous_midpoint=0,      # Center color on 0% P/L
+        title="Portfolio Allocation by Market Value (Color by P/L %)",
+    )
+    
+    fig.update_layout(
+        margin=dict(t=50, l=25, r=25, b=25),
+        height=500
+    )
+    fig.update_traces(
+        textinfo="label+value+text",
+        texttemplate="%{label}<br>$%{value:,.0f}<br>%{customdata[0]:.2f}%",
+        customdata=pl_df[['P/L (%)']]
+    )
+    return fig
+
 # --- ✅ MODIFIED FUNCTION ---
 def display_buy_signal_checklist(ticker_data):
     """
@@ -1419,7 +1453,7 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     
     be_ob_label = f"{'✅ Mitigated' if be_ob_validated else 'Fresh'} Bearish OB"
     be_ob_display = f"${be_ob_high:.2f} - ${be_ob_low:.2f}" if pd.notna(be_ob_low) else "N/A"
-    be_ob_help = f"FVG: {'Yes' if be_ob_fvg else 'No'} | BOS Vol: {'High' if be_ob_vol else 'Low'}"
+    be_ob_help = f"FVG: {'Yes' if b_ob_fvg else 'No'} | BOS Vol: {'High' if b_ob_vol else 'Low'}"
     zone_cols[1].metric(be_ob_label, be_ob_display, help=be_ob_help)
     
     # 3. Support (Using new SMC data)
@@ -1557,15 +1591,24 @@ def display_portfolio_tab(all_data_df):
             "Market Value": market_value,
             "Total Cost": total_cost_basis,
             "P/L ($)": pl_dollars,
-            "P/L (%)": pl_percent
+            "P/L (%)": pl_percent,
+            "Sector": ticker_data.get('Sector', 'Unknown') # <-- ✅ ADDED SECTOR
         })
 
     if not portfolio_data:
         st.error("Could not calculate P/L for portfolio. Ensure tickers are valid.")
         return
 
-    # Display P/L Dataframe
     pl_df = pd.DataFrame(portfolio_data)
+
+    # --- ✅ NEW: Display Treemap Chart ---
+    st.subheader("Portfolio Allocation")
+    portfolio_treemap = create_portfolio_treemap(pl_df)
+    st.plotly_chart(portfolio_treemap, use_container_width=True)
+    # --- ✅ END NEW CHART ---
+
+    # Display P/L Dataframe
+    st.subheader("Positions Detail")
     st.dataframe(pl_df.set_index('Ticker'), use_container_width=True,
         column_config={
             "Cost Basis": st.column_config.NumberColumn(format="$%.2f"),
@@ -1574,6 +1617,7 @@ def display_portfolio_tab(all_data_df):
             "Total Cost": st.column_config.NumberColumn(format="$%.2f"),
             "P/L ($)": st.column_config.NumberColumn(format="$%.2f"),
             "P/L (%)": st.column_config.NumberColumn(format="%.2f%%"),
+            "Sector": st.column_config.TextColumn("Sector"),
         }
     )
     
