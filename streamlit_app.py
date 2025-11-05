@@ -22,7 +22,7 @@ import pickle
 # --- ⭐️ 1. Set Page Configuration FIRST ⭐️ ---
 st.set_page_config(
     page_title="SPUS Quant Analyzer",
-    page_icon="https.www.sp-funds.com/wp-content/uploads/2019/07/favicon-32x32.png", 
+    page_icon="https://www.sp-funds.com/wp-content/uploads/2019/07/favicon-32x32.png", 
     layout="wide"
 )
 
@@ -63,7 +63,7 @@ def load_css():
     """Injects custom CSS for a modern, minimal, card-based theme."""
     st.markdown(f"""
     <style>
-        @import url('https.fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         html, body, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] {{
             font-family: 'Inter', sans-serif;
         }}
@@ -139,14 +139,6 @@ def load_css():
             border: 1px solid var(--gray-800); border-radius: 8px;
             padding: 1rem 1.25rem;
         }}
-        
-        /* --- NEW: Style for Entry Signal Delta --- */
-        [data-testid="stMetricDelta"] > div:first-child {{
-            font-weight: 600;
-            font-size: 0.8rem;
-            letter-spacing: 0.5px;
-        }}
-
     </style>
     """, unsafe_allow_html=True)
 
@@ -356,7 +348,7 @@ def generate_quant_report(CONFIG, progress_callback=None):
         'momentum_12m': 'Momentum (12M %)', 'volatility_1y': 'Volatility (1Y)',
         'returnOnEquity': 'ROE (%)', 'debtToEquity': 'Debt/Equity', 'profitMargins': 'Profit Margin (%)',
         'beta': 'Beta', 'RSI': 'RSI (14)', 'ADX': 'ADX (14)',
-        'Final Stop Loss': 'Stop Loss' # <-- MODIFIED
+        'Stop Loss Price': 'Stop Loss', 'Take Profit Price': 'Take Profit'
     })
     
     pct_cols = ['ROE (%)', 'Profit Margin (%)', 'Momentum (12M %)', 'Risk % (to Stop)']
@@ -577,8 +569,6 @@ def display_buy_signal_checklist(ticker_data):
     """
     Displays a 4-step checklist on the Ticker Deep Dive tab,
     showing which buy criteria are met.
-    
-    --- MODIFIED to include Entry Signal ---
     """
     
     SCORE_THRESHOLD = 1.0
@@ -603,21 +593,31 @@ def display_buy_signal_checklist(ticker_data):
         step2_met = True
     step2_details = f"Value: {z_value:.2f}, Quality: {z_quality:.2f}"
 
-    # --- NEW: Step 3: SMC Entry Signal ---
+    # Step 3: Technicals
     step3_met = False
-    step3_text = "**3. SMC Entry Signal**"
-    entry_signal = ticker_data.get('entry_signal', 'No Trade')
+    step3_text = "**3. Favorable Technicals**"
     
-    if entry_signal == 'Buy near Bullish OB':
+    trend = ticker_data.get('Trend (50/200 Day MA)', 'N/A')
+    rsi = ticker_data.get('RSI', 50)
+    macd_sig = ticker_data.get('MACD_Signal', 'N/A')
+
+    trend_ok = (trend == 'Confirmed Uptrend')
+    rsi_ok = (pd.notna(rsi) and rsi < RSI_OVERBOUGHT)
+    macd_ok = (macd_sig in ['Bullish', 'Bullish Crossover'])
+    
+    if trend_ok and rsi_ok and macd_ok:
         step3_met = True
-        step3_details = f"Signal: {entry_signal}"
-    elif entry_signal == 'Sell near Bearish OB':
-        step3_met = False # This is a *Buy* checklist
-        step3_details = f"Signal: {entry_signal}"
-    else:
-        step3_met = False
-        step3_details = "Signal: No Trade"
-        
+    
+    trend_icon = "✅" if trend_ok else "❌"
+    rsi_icon = "✅" if rsi_ok else "❌"
+    macd_icon = "✅" if macd_ok else "❌"
+    
+    step3_details = (
+        f"{trend_icon} Trend: {trend}<br>"
+        f"{rsi_icon} RSI: {rsi:.1f} (Not Overbought)<br>"
+        f"{macd_icon} MACD: {macd_sig}"
+    )
+
     # Step 4: Risk/Reward
     step4_met = False
     step4_text = f"**4. R/R Ratio > {RR_RATIO_THRESHOLD}**"
@@ -632,7 +632,7 @@ def display_buy_signal_checklist(ticker_data):
     criteria = [
         (step1_met, step1_text, step1_details),
         (step2_met, step2_text, step2_details),
-        (step3_met, step3_text, step3_details), # <-- MODIFIED
+        (step3_met, step3_text, step3_details),
         (step4_met, step4_text, step4_details)
     ]
     
@@ -886,33 +886,34 @@ def main():
             format="%.1f B"
         )
         
-    # --- NEW: Row 2: Trend & Entry Signal ---
+    # Row 2: Trend & Support % (NEW)
     filt_col3, filt_col4 = st.columns(2)
 
+    # NEW: Trend Filter
     all_trends = sorted(df['Trend (50/200 Day MA)'].unique())
     selected_trends = filt_col3.multiselect("Filter by MA Trend:", all_trends, default=all_trends)
     
-    all_signals = sorted(df['entry_signal'].unique())
-    selected_signals = filt_col4.multiselect("Filter by Entry Signal:", all_signals, default=all_signals)
-    
-    # --- NEW: Row 3: Support % ---
-    filt_col5, _ = st.columns(2) # Use first col, leave second blank
-
+    # NEW: Support % Filter
     if 'pct_above_support' in df.columns and not df['pct_above_support'].isnull().all():
+        # Handle potential negative values if price is *below* support
         min_pct = float(df['pct_above_support'].min())
         max_pct = float(df['pct_above_support'].max())
-        default_min_pct = max(0.0, min_pct)
-        if min_pct >= max_pct: max_pct = min_pct + 10.0
         
-        support_range = filt_col5.slider(
+        # Ensure min_pct is at least 0 for the default slider start
+        default_min_pct = max(0.0, min_pct)
+
+        if min_pct >= max_pct:
+            max_pct = min_pct + 10.0 # Add 10% if min/max are same
+        
+        support_range = filt_col4.slider(
             "Filter by % Above Support (90d):",
-            min_value=min_pct, 
+            min_value=min_pct, # Allow filtering for stocks *below* support
             max_value=max_pct,
-            value=(default_min_pct, max_pct),
+            value=(default_min_pct, max_pct), # Default to 0% -> Max
             format="%.1f%%"
         )
     else:
-        filt_col5.info("No Support % data to filter.")
+        filt_col4.info("No Support % data to filter.")
         support_range = (0.0, 0.0)
     
 
@@ -921,8 +922,7 @@ def main():
     # Base filter criteria
     base_filters = (
         (df['Sector'].isin(selected_sectors)) &
-        (df['Trend (50/200 Day MA)'].isin(selected_trends)) &
-        (df['entry_signal'].isin(selected_signals)) # <-- ADDED
+        (df['Trend (50/200 Day MA)'].isin(selected_trends))
     )
 
     # Market Cap filter (only if valid range)
@@ -992,9 +992,8 @@ def main():
                 Is it high on `Value` (it's cheap) and `Quality` (it's a good company)? 
                 This helps you buy stocks that match your strategy.
                 
-                ### 3. Check the SMC Signal & Technicals (The "When")
-                On the **"Deep Dive"** tab, look at the **"Key Metrics"** and **"Price Chart"**.
-                * **Entry Signal:** Does it show **"Buy near Bullish OB"**? This is your key SMC signal.
+                ### 3. Check the Technicals (The "When")
+                On the **"Deep Dive"** tab, look at the **"Price Chart"** and metrics.
                 * **Trend (50/200 Day MA):** Is the trend "Confirmed Uptrend"?
                 * **RSI/MACD:** Are the technical signals (`RSI`, `MACD_Signal`) favorable 
                     (e.g., not "overbought" or "bearish")?
@@ -1002,7 +1001,7 @@ def main():
                 ### 4. Check the Risk & Sizing (The "How")
                 In the **"Risk & Position Sizing"** section, check the:
                 * **Risk/Reward Ratio:** Is it favorable (e.g., > 1.5)?
-                * **Final Stop Loss:** Is this exit price (based on ATR or Cut-Loss) acceptable?
+                * **Stop Loss Price:** Is this exit price acceptable to you?
                 * **Position Size (USD):** This calculates how much to invest for 
                     your pre-defined risk amount (e.g., $50).
             """)
@@ -1033,14 +1032,13 @@ def main():
             st.subheader("Top 20 Overview")
             
             display_cols = [
-                'Last Price', 'Sector', 
-                'entry_signal', # <-- NEW
+                'Last Price', 'Sector', 'Market Cap', 
                 'Final Quant Score', 
                 'Z_Value', 'Z_Momentum', 'Z_Quality', 
                 'Z_Size', 'Z_LowVolatility', 'Z_Technical',
                 'Risk/Reward Ratio',
                 'Position Size (USD)',
-                'pct_above_support'
+                'pct_above_support' # <-- NEW
             ]
             display_cols = [c for c in display_cols if c in filtered_df.columns]
             
@@ -1053,7 +1051,6 @@ def main():
                 column_config={
                     "Last Price": st.column_config.NumberColumn(format="$%.2f"),
                     "Market Cap": st.column_config.NumberColumn(format="%.1f B", help="Market Cap in Billions"),
-                    "entry_signal": st.column_config.TextColumn("SMC Signal"), # <-- NEW
                     "Final Quant Score": st.column_config.NumberColumn(format="%.3f"),
                     "Z_Value": st.column_config.NumberColumn(format="%.2f"),
                     "Z_Momentum": st.column_config.NumberColumn(format="%.2f"),
@@ -1063,7 +1060,7 @@ def main():
                     "Z_Technical": st.column_config.NumberColumn(format="%.2f"),
                     "Risk/Reward Ratio": st.column_config.NumberColumn(format="%.2f"),
                     "Position Size (USD)": st.column_config.NumberColumn(format="$%,.0f"),
-                    "pct_above_support": st.column_config.NumberColumn(format="%.1f%%", help="% Above 90-day Support"),
+                    "pct_above_support": st.column_config.NumberColumn(format="%.1f%%", help="% Above 90-day Support"), # <-- NEW
                 },
                 use_container_width=True,
                 height=700
@@ -1170,33 +1167,20 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     
     st.markdown(f"**Sector:** {ticker_data['Sector']} | **Data Source:** `{ticker_data['source']}`")
     
-    # --- MODIFIED: Key Metrics (Added Entry Signal) ---
-    kpi_cols = st.columns(6) 
+    # Key Metrics
+    kpi_cols = st.columns(5) # <-- CHANGED from 4
+    kpi_cols[0].metric("Final Quant Score", f"{ticker_data['Final Quant Score']:.3f}")
+    kpi_cols[1].metric("Last Price", f"${ticker_data['last_price']:.2f}")
+    kpi_cols[2].metric("Market Cap", f"${ticker_data['marketCap']/1e9:.1f} B")
+    kpi_cols[3].metric("Trend (50/200 MA)", ticker_data['Trend (50/200 Day MA)'])
     
-    # --- NEW: Entry Signal Metric ---
-    entry_signal = ticker_data.get('entry_signal', 'No Trade')
-    delta_text = "-"
-    delta_color = "off"
-    if entry_signal == 'Buy near Bullish OB':
-        delta_text = "BUY"
-        delta_color = "normal" 
-    elif entry_signal == 'Sell near Bearish OB':
-        delta_text = "SELL"
-        delta_color = "inverse"
-        
-    kpi_cols[0].metric("SMC Entry Signal", entry_signal, delta=delta_text, delta_color=delta_color)
-    # --- END OF NEW ---
-
-    kpi_cols[1].metric("Final Quant Score", f"{ticker_data['Final Quant Score']:.3f}")
-    kpi_cols[2].metric("Last Price", f"${ticker_data['last_price']:.2f}")
-    kpi_cols[3].metric("Market Cap", f"${ticker_data['marketCap']/1e9:.1f} B")
-    kpi_cols[4].metric("Trend (50/200 MA)", ticker_data['Trend (50/200 Day MA)'])
-    
+    # --- NEW: Last Dividend Metric ---
     last_div_val = ticker_data.get('last_dividend_value', np.nan)
     last_div_date = ticker_data.get('last_dividend_date', 'N/A')
     div_display = f"${last_div_val:.2f}" if pd.notna(last_div_val) else "N/A"
     div_help = f"Paid on: {last_div_date}"
-    kpi_cols[5].metric("Last Dividend", div_display, help=div_help)
+    kpi_cols[4].metric("Last Dividend", div_display, help=div_help)
+    # --- END OF NEW ---
     
     st.divider()
 
@@ -1245,68 +1229,54 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
 
     st.divider()
     
-    # --- MODIFIED: Risk, Value & Position Sizing Metrics ---
+    # Risk, Value & Position Sizing Metrics
     st.subheader("Risk & Position Sizing")
-    risk_col1, risk_col2, risk_col3, risk_col4 = st.columns(4)
-
-    # Column 1: Stop Losses
-    with risk_col1:
-        sl_atr = ticker_data.get('Stop Loss (ATR)', np.nan)
-        sl_cut = ticker_data.get('Stop Loss (Cut Loss)', np.nan)
-        sl_final = ticker_data.get('Final Stop Loss', np.nan)
-        sl_method = ticker_data.get('SL_Method', 'N/A')
-        risk_pct = ticker_data.get('Risk % (to Stop)', np.nan)
-        risk_display = f"Risk %: {risk_pct:.1f}%" if pd.notna(risk_pct) else "N/A"
-
-        st.metric("Stop Loss (ATR)", f"${sl_atr:.2f}" if pd.notna(sl_atr) else "N/A")
-        st.metric("Stop Loss (Cut Loss)", f"${sl_cut:.2f}" if pd.notna(sl_cut) else "N/A", help="Based on last swing low")
-        st.metric(f"Final Stop ({sl_method})", f"${sl_final:.2f}" if pd.notna(sl_final) else "N/A", help=risk_display)
-
-    # Column 2: Profit & R/R
-    with risk_col2:
-        tp_price = ticker_data.get('Take Profit Price', np.nan)
-        rr_ratio = ticker_data.get('Risk/Reward Ratio', np.nan)
-        tp_display = f"${tp_price:.2f}" if pd.notna(tp_price) else "N/A"
-        rr_display = f"{rr_ratio:.2f}" if pd.notna(rr_ratio) else "N/A"
-
-        st.metric("Take Profit (Fib 1.618)", tp_display)
-        st.metric("Risk/Reward Ratio", rr_display)
-
-    # Column 3 & 4: Position Sizing
-    with risk_col3:
-        pos_shares = ticker_data.get('Position Size (Shares)', np.nan)
-        pos_display = f"{pos_shares:.0f} Shares" if pd.notna(pos_shares) else "N/A"
-        risk_usd = ticker_data.get('Risk Per Trade (USD)', 50)
-        st.metric("Position Size (Shares)", pos_display, help=f"Based on ${risk_usd:,.0f} risk")
+    risk_val_cols = st.columns(5)
     
-    with risk_col4:
-        pos_usd = ticker_data.get('Position Size (USD)', np.nan)
-        pos_usd_display = f"${pos_usd:,.0f}" if pd.notna(pos_usd) else "N/A"
-        st.metric("Position Size (USD)", pos_usd_display, help="Shares * Last Price")
+    sl_price = ticker_data['Stop Loss Price']
+    risk_pct = ticker_data['Risk % (to Stop)']
+    sl_display = f"${sl_price:.2f}" if pd.notna(sl_price) else "N/A"
+    risk_display = f"Risk %: {risk_pct:.1f}%" if pd.notna(risk_pct) else "N/A"
+    sl_method = ticker_data.get('SL_Method', 'N/A')
+    risk_val_cols[0].metric(f"Stop Loss ({sl_method})", sl_display, help=risk_display)
+
+    tp_price = ticker_data['Take Profit Price']
+    tp_display = f"${tp_price:.2f}" if pd.notna(tp_price) else "N/A"
+    risk_val_cols[1].metric("Take Profit (Fib 1.618)", tp_display)
+
+    rr_ratio = ticker_data['Risk/Reward Ratio']
+    rr_display = f"{rr_ratio:.2f}" if pd.notna(rr_ratio) else "N/A"
+    risk_val_cols[2].metric("Risk/Reward Ratio", rr_display)
+
+    pos_shares = ticker_data['Position Size (Shares)']
+    pos_display = f"{pos_shares:.0f} Shares" if pd.notna(pos_shares) else "N/A"
+    risk_usd = ticker_data.get('Risk Per Trade (USD)', 500)
+    risk_val_cols[3].metric("Position Size (Shares)", pos_display, help=f"Based on ${risk_usd:,.0f} risk")
+    
+    pos_usd = ticker_data['Position Size (USD)']
+    pos_usd_display = f"${pos_usd:,.0f}" if pd.notna(pos_usd) else "N/A"
+    risk_val_cols[4].metric("Position Size (USD)", pos_usd_display, help="Shares * Last Price")
 
     st.divider() 
 
-    # --- ⭐️ MODIFIED: Key Price Zones Section (Added Validation) ⭐️ ---
+    # --- ⭐️ NEW: Key Price Zones Section (Order Blocks & S/R) ⭐️ ---
     st.subheader("Key Price Zones")
     zone_cols = st.columns(4)
     
     # 1. Bullish Order Block (NEW)
     b_ob_low = ticker_data.get('bullish_ob_low', np.nan)
     b_ob_high = ticker_data.get('bullish_ob_high', np.nan)
-    b_ob_validated = ticker_data.get('bullish_ob_validated', False)
-    b_ob_label = f"{'✅' if b_ob_validated else '❌'} Bullish OB (Demand)"
     b_ob_display = f"${b_ob_low:.2f} - ${b_ob_high:.2f}" if pd.notna(b_ob_low) else "N/A"
-    zone_cols[0].metric(b_ob_label, b_ob_display, 
-                        help="SMC OB: Last down-cluster before Break of Structure (BOS). ✅ = Validated (Mitigated & Bounced).")
+    zone_cols[0].metric("Bullish OB (Demand)", b_ob_display, 
+                        help="Based on the last down-candle before the recent 40-day high. A potential area of buying interest.")
     
     # 2. Bearish Order Block (NEW)
     be_ob_low = ticker_data.get('bearish_ob_low', np.nan)
     be_ob_high = ticker_data.get('bearish_ob_high', np.nan)
-    be_ob_validated = ticker_data.get('bearish_ob_validated', False)
-    be_ob_label = f"{'✅' if be_ob_validated else '❌'} Bearish OB (Supply)"
+    # Note: Bearish OBs are typically quoted High-to-Low
     be_ob_display = f"${be_ob_high:.2f} - ${be_ob_low:.2f}" if pd.notna(be_ob_low) else "N/A"
-    zone_cols[1].metric(be_ob_label, be_ob_display, 
-                        help="SMC OB: Last up-cluster before Break of Structure (BOS). ✅ = Validated (Mitigated & Bounced).")
+    zone_cols[1].metric("Bearish OB (Supply)", be_ob_display, 
+                        help="Based on the last up-candle before the recent 40-day low. A potential area of selling interest.")
     
     # 3. Support (This data existed but wasn't shown)
     support = ticker_data.get('Support_90d', np.nan)
@@ -1317,7 +1287,7 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     resistance = ticker_data.get('Resistance_90d', np.nan)
     resistance_display = f"${resistance:.2f}" if pd.notna(resistance) else "N/A"
     zone_cols[3].metric("Resistance (90d High)", resistance_display)
-    # --- ⭐️ END OF MODIFIED Section ⭐️ ---
+    # --- ⭐️ END OF NEW Section ⭐️ ---
     
     st.divider() 
     
