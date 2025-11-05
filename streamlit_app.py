@@ -744,9 +744,11 @@ def main():
         st.session_state.selected_ticker = None
     if 'run_timestamp' not in st.session_state:
         st.session_state.run_timestamp = time.time() 
-    # --- ⭐️ MODIFIED ⭐️ ---
     if 'active_tab' not in st.session_state:
         st.session_state.active_tab = "🏆 Quant Rankings"
+    # --- ✅ NEW: Initialize Portfolio ---
+    if 'portfolio' not in st.session_state:
+        st.session_state.portfolio = []
     
     load_css()
     
@@ -782,7 +784,6 @@ def main():
             st.session_state.selected_ticker = None
             st.session_state.run_timestamp = time.time() 
             st.session_state.active_tab = "🏆 Quant Rankings"
-            # --- ⭐️ MODIFIED ⭐️ ---
             if 'raw_df' in st.session_state:
                 del st.session_state['raw_df']
             st.rerun()
@@ -1050,7 +1051,8 @@ def main():
 
     # --- ⭐️ MODIFIED: Replaced st.tabs with st.radio ⭐️ ---
     
-    tab_list = ["🏆 Quant Rankings", "🔬 Ticker Deep Dive", "📈 Portfolio Analytics"]
+    # --- ✅ NEW: Added Portfolio Tab ---
+    tab_list = ["🏆 Quant Rankings", "🔬 Ticker Deep Dive", "📈 Portfolio Analytics", "💼 My Portfolio"]
     
     # --- THIS IS THE FIX ---
     # We find the index of the tab we *want* to be active from our session state.
@@ -1071,6 +1073,7 @@ def main():
     # in case the *user* clicked a different tab.
     st.session_state.active_tab = selected_tab
     # --- END OF FIX ---
+    
     # --- Tab 1: Quant Rankings ---
     if selected_tab == "🏆 Quant Rankings":
         st.header("🏆 Top Stocks by Final Quant Score")
@@ -1230,6 +1233,10 @@ def main():
                     title="Median Factor Z-Score by Sector"
                 )
                 st.plotly_chart(sector_heatmap, use_container_width=True)
+    
+    # --- ✅ NEW: Tab 4: My Portfolio ---
+    elif selected_tab == "💼 My Portfolio":
+        display_portfolio_tab(st.session_state.raw_df)
             
 # --- ⭐️ NEW HELPER FUNCTION ⭐️ ---
 def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_cols, norm_weights, filtered_df):
@@ -1445,6 +1452,211 @@ def display_deep_dive_details(ticker_data, hist_data, all_histories, factor_z_co
     with st.expander("View All Raw Data for " + selected_ticker):
         st.dataframe(ticker_data.astype(str))
 # --- ⭐️ END OF NEW HELPER FUNCTION ⭐️ ---
+
+
+# --- ✅ NEW PORTFOLIO TAB FUNCTION ---
+def display_portfolio_tab(all_data_df):
+    
+    st.header("💼 My Portfolio")
+    
+    # --- 1. File Save/Load ---
+    st.subheader("Portfolio Management")
+    file_col1, file_col2 = st.columns([1, 3])
+    
+    with file_col1:
+        # Save Portfolio
+        portfolio_json = json.dumps(st.session_state.portfolio, indent=4)
+        st.download_button(
+            label="💾 Save Portfolio",
+            data=portfolio_json,
+            file_name="my_portfolio.json",
+            mime="application/json",
+            use_container_width=True
+        )
+
+    with file_col2:
+        # Load Portfolio
+        uploaded_file = st.file_uploader("📂 Load Portfolio (JSON)", type="json")
+        if uploaded_file is not None:
+            try:
+                new_portfolio = json.load(uploaded_file)
+                # Basic validation
+                if isinstance(new_portfolio, list) and all('ticker' in item for item in new_portfolio):
+                    st.session_state.portfolio = new_portfolio
+                    st.success(f"Successfully loaded {len(new_portfolio)} positions!")
+                else:
+                    st.error("Invalid portfolio file format.")
+            except Exception as e:
+                st.error(f"Error loading file: {e}")
+
+    # --- 2. Add New Position ---
+    with st.expander("Add New Position"):
+        with st.form("add_position_form"):
+            form_col1, form_col2, form_col3 = st.columns(3)
+            
+            new_ticker = form_col1.text_input("Ticker Symbol").upper().strip()
+            new_shares = form_col2.number_input("Number of Shares", min_value=0.0, step=1.0)
+            new_cost_basis = form_col3.number_input("Cost Basis (Price per Share)", min_value=0.01, format="%.2f")
+            
+            submitted = st.form_submit_button("Add Position")
+            
+            if submitted:
+                if not new_ticker or new_shares == 0 or new_cost_basis == 0:
+                    st.error("Please fill out all fields.")
+                elif new_ticker not in all_data_df.index:
+                    st.error(f"Ticker '{new_ticker}' not found in the analyzer's database. Run a 'Deep Dive' for it first from the sidebar.")
+                else:
+                    new_position = {
+                        "ticker": new_ticker,
+                        "shares": new_shares,
+                        "cost_basis": new_cost_basis
+                    }
+                    st.session_state.portfolio.append(new_position)
+                    st.success(f"Added {new_shares} shares of {new_ticker}!")
+                    st.rerun()
+
+    st.divider()
+
+    # --- 3. Display P/L Dashboard ---
+    st.subheader("Open Positions")
+    
+    if not st.session_state.portfolio:
+        st.info("Your portfolio is empty. Add a new position above.")
+        return # Stop here if no portfolio
+
+    portfolio_data = []
+    total_market_value = 0
+    total_cost = 0
+
+    # Ticker list for removal
+    tickers_in_portfolio = [pos['ticker'] for pos in st.session_state.portfolio]
+
+    for position in st.session_state.portfolio:
+        ticker = position['ticker']
+        if ticker not in all_data_df.index:
+            st.warning(f"Data for {ticker} is missing. Please run analysis for this ticker.")
+            continue
+            
+        ticker_data = all_data_df.loc[ticker]
+        current_price = ticker_data['last_price']
+        
+        market_value = position['shares'] * current_price
+        total_cost_basis = position['shares'] * position['cost_basis']
+        
+        pl_dollars = market_value - total_cost_basis
+        pl_percent = (pl_dollars / total_cost_basis) * 100 if total_cost_basis != 0 else 0
+        
+        total_market_value += market_value
+        total_cost += total_cost_basis
+        
+        portfolio_data.append({
+            "Ticker": ticker,
+            "Shares": position['shares'],
+            "Cost Basis": position['cost_basis'],
+            "Current Price": current_price,
+            "Market Value": market_value,
+            "Total Cost": total_cost_basis,
+            "P/L ($)": pl_dollars,
+            "P/L (%)": pl_percent
+        })
+
+    if not portfolio_data:
+        st.error("Could not calculate P/L for portfolio. Ensure tickers are valid.")
+        return
+
+    # Display P/L Dataframe
+    pl_df = pd.DataFrame(portfolio_data)
+    st.dataframe(pl_df.set_index('Ticker'), use_container_width=True,
+        column_config={
+            "Cost Basis": st.column_config.NumberColumn(format="$%.2f"),
+            "Current Price": st.column_config.NumberColumn(format="$%.2f"),
+            "Market Value": st.column_config.NumberColumn(format="$%.2f"),
+            "Total Cost": st.column_config.NumberColumn(format="$%.2f"),
+            "P/L ($)": st.column_config.NumberColumn(format="$%.2f"),
+            "P/L (%)": st.column_config.NumberColumn(format="%.2f%%"),
+        }
+    )
+    
+    # Display Totals
+    total_pl = total_market_value - total_cost
+    total_pl_pct = (total_pl / total_cost) * 100 if total_cost != 0 else 0
+    
+    total_col1, total_col2, total_col3 = st.columns(3)
+    total_col1.metric("Total Market Value", f"${total_market_value:,.2f}")
+    total_col2.metric("Total Cost Basis", f"${total_cost:,.2f}")
+    total_col3.metric("Total P/L", f"${total_pl:,.2f}", delta=f"{total_pl_pct:.2f}%")
+
+    # --- 4. Position Analyzer ---
+    st.divider()
+    st.subheader("Position Analyzer")
+    
+    selected_ticker = st.selectbox("Select a position to analyze:", options=tickers_in_portfolio)
+    
+    if selected_ticker:
+        # Find the full position and ticker data
+        position_data = next(p for p in st.session_state.portfolio if p['ticker'] == selected_ticker)
+        ticker_data = all_data_df.loc[selected_ticker]
+        
+        display_position_analysis(position_data, ticker_data)
+    
+    if st.button("Clear Entire Portfolio"):
+        st.session_state.portfolio = []
+        st.rerun()
+
+# --- ✅ NEW POSITION ANALYSIS HELPER ---
+def display_position_analysis(position_data, ticker_data):
+    
+    pa_col1, pa_col2, pa_col3 = st.columns(3)
+    
+    with pa_col1:
+        st.subheader("Where to Buy More? (Averaging)")
+        cost_basis = position_data['cost_basis']
+        b_ob_low = ticker_data.get('bullish_ob_low', np.nan)
+        b_ob_high = ticker_data.get('bullish_ob_high', np.nan)
+        
+        st.metric("Your Cost Basis", f"${cost_basis:,.2f}")
+
+        if pd.notna(b_ob_low):
+            st.metric("Bullish OB (Demand Zone)", f"${b_ob_low:,.2f} - ${b_ob_high:,.2f}")
+            if cost_basis > b_ob_high:
+                st.info("The current Demand Zone is *below* your cost basis. This could be a good area to average down if the signal is confirmed.")
+            else:
+                st.success("Your cost basis is already at or below the current Demand Zone. This is a strong position.")
+        else:
+            st.warning("No clear Demand Zone (Bullish OB) found.")
+
+    with pa_col2:
+        st.subheader("Should I Buy More Now?")
+        st.markdown("Check the 5-step confirmation checklist:")
+        
+        # Re-use the same checklist from the Deep Dive tab
+        display_buy_signal_checklist(ticker_data)
+        
+        entry_signal = ticker_data.get('entry_signal', 'No Trade')
+        if entry_signal == 'Buy near Bullish OB':
+            st.success("✅ **Confirmation:** The SMC Entry Signal is active now.")
+        else:
+            st.warning("❌ **Wait:** The SMC Entry Signal is NOT active. Consider waiting for a pullback to the Demand Zone.")
+
+    with pa_col3:
+        st.subheader("Exit / P&L Analysis")
+        
+        stop_loss = ticker_data.get('Final Stop Loss', np.nan)
+        be_ob_high = ticker_data.get('bearish_ob_high', np.nan)
+        be_ob_low = ticker_data.get('bearish_ob_low', np.nan)
+
+        if pd.notna(stop_loss):
+            st.metric("Suggested Stop Loss", f"${stop_loss:,.2f}")
+        else:
+            st.metric("Suggested Stop Loss", "N/A")
+            
+        if pd.notna(be_ob_high):
+            st.metric("Supply Zone (Profit Target)", f"${be_ob_low:,.2f} - ${be_ob_high:,.2f}")
+        else:
+            st.metric("Supply Zone (Profit Target)", "N/A")
+            
+        if pd.notna(stop_loss) and cost_basis < stop_loss:
+            st.error("⚠️ **Warning:** Your cost basis is *below* the suggested stop loss. This is a high-risk position.")
 
 
 # --- ⭐️ 6. Scheduler Entry Point ---
