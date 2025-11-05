@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-SPUS Quantitative Analyzer v18.9 (Force Boolean Fix)
+SPUS Quantitative Analyzer v19.0 (SMC / BOS / FVG Upgrade)
 
 - Implements data fallbacks (Alpha Vantage) and validation.
 - Fetches a wide range of metrics for 6-factor modeling.
 - Includes robust data fetching for tickers and fundamentals.
 - REWORKED: find_order_blocks for SMC (BOS, Mitigation, Validation).
-- FIXED: Replaced pandas_ta.pivothigh/low with scipy.signal.argrelelextrema.
+- FIXED: Replaced pandas_ta.pivothigh/low with scipy.signal.argrelextrema.
 - FIXED: Corrected logic in find_order_blocks.
 - FIXED: Hardened all type-casting in parse_ticker_data.
 - FIXED: Replaced pd.NA with bool(False) for nullable boolean columns
@@ -18,6 +18,11 @@ SPUS Quantitative Analyzer v18.9 (Force Boolean Fix)
 - ADDED: 'entry_signal' filter based on proximity to validated OBs.
 - MODIFIED: Risk logic to use dynamic 'Final Stop Loss' comparing
   ATR vs. 'Cut Loss' (last swing low).
+- UPGRADED: find_order_blocks to use Break of Structure (BOS),
+  Fair Value Gaps (FVG), and Volume confirmation.
+- ADDED: pct_above_cutloss metric for filtering.
+- FIXED: All failure-path return dictionaries to include default booleans,
+  preventing pyarrow crashes in streamlit.
 """
 
 import requests
@@ -133,21 +138,24 @@ def fetch_spus_tickers_from_web(url="https://www.sp-funds.com/spus/"):
 def find_order_blocks(hist_df_full, ticker="TICKER"):
     """
     Finds the most recent Bullish and Bearish Order Blocks based on
-    Smart Money Concepts (SMC).
-    FIXED: Logic is now independent for Bullish/Bearish sides.
+    Smart Money Concepts (SMC) including Break of Structure (BOS),
+    Fair Value Gaps (FVG), and Volume confirmation.
     """
     
     # --- 1. Initialize & Load Config ---
     smc_config = CONFIG.get('TECHNICALS', {}).get('SMC_ORDER_BLOCKS', {})
     lookback = smc_config.get('LOOKBACK_PERIOD', 252)
-    pivots_n = smc_config.get('PIVOT_BARS', 5)
-    cluster_size = smc_config.get('CLUSTER_SIZE', 2)
-    validation_lookback = smc_config.get('VALIDATION_LOOKBACK', 10)
+    pivots_n = smc_config.get('PIVOT_BARS', 5) # How many bars on each side to confirm a pivot
+    vol_lookback = smc_config.get('VOLUME_LOOKBACK', 50)
+    vol_multiplier = smc_config.get('VOLUME_MULTIPLIER', 1.5)
+    fvg_check = smc_config.get('CHECK_FOR_FVG', True)
 
-    # Base return object
+    # Base return object - now includes FVG and Volume flags
     ob_data = {
-        'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bullish_ob_validated': bool(False), # Force bool
-        'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': bool(False), # Force bool
+        'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bullish_ob_validated': bool(False),
+        'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
+        'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': bool(False),
+        'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
         'last_swing_low': np.nan, 'last_swing_high': np.nan
     }
 
@@ -158,7 +166,14 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
     try:
         hist_df = hist_df_full.iloc[-lookback:].copy()
         
-        # --- 2. Find Swing Highs/Lows (FIXED with Scipy) ---
+        # --- 2. Add Volume & Pivot Indicators ---
+        if 'Volume' not in hist_df.columns:
+             logging.warning(f"[{ticker}] 'Volume' not in hist_df. Cannot perform volume confirmation.")
+             hist_df['Volume'] = 0
+             vol_multiplier = 999 # Effectively disables volume check
+             
+        hist_df['vol_sma'] = hist_df['Volume'].rolling(window=vol_lookback).mean()
+        
         high_idx = argrelextrema(hist_df['High'].values, np.greater_equal, order=pivots_n)[0]
         low_idx = argrelextrema(hist_df['Low'].values, np.less_equal, order=pivots_n)[0]
         
@@ -170,96 +185,144 @@ def find_order_blocks(hist_df_full, ticker="TICKER"):
         swing_highs = hist_df[hist_df['sh'].notna()]
         swing_lows = hist_df[hist_df['sl'].notna()]
 
+        if swing_highs.empty or swing_lows.empty:
+            logging.warning(f"[{ticker}] No swing points found in the last {lookback} days.")
+            return ob_data
+
+        ob_data['last_swing_high'] = swing_highs.iloc[-1].sh
+        ob_data['last_swing_low'] = swing_lows.iloc[-1].sl
+
         # --- 3. Find Most Recent Bullish OB (BOS Up) ---
-        if not swing_highs.empty:
-            last_sh = swing_highs.iloc[-1]
-            ob_data['last_swing_high'] = last_sh.sh
-            
+        # Find the last time price broke *above* a swing high
+        
+        # Iterate backwards through swing highs
+        for i in range(len(swing_highs) - 1, 0, -1):
+            last_sh = swing_highs.iloc[i-1] # The SH we need to break
             hist_after_sh = hist_df.loc[last_sh.name:]
+            
+            # Find all candles that closed above that SH (BOS)
             bos_up_candles = hist_after_sh[hist_after_sh['Close'] > last_sh.sh]
             
             if not bos_up_candles.empty:
                 first_bos_candle = bos_up_candles.iloc[0]
+                
+                # --- Find the OB ---
+                # Look for the last down candle *before* the BOS candle
                 candles_before_bos = hist_df.loc[:first_bos_candle.name].iloc[:-1]
                 bearish_candles = candles_before_bos[candles_before_bos['Close'] < candles_before_bos['Open']]
                 
                 if not bearish_candles.empty:
-                    last_bearish_cluster = bearish_candles.iloc[-cluster_size:]
-                    ob_data['bullish_ob_low'] = last_bearish_cluster['Low'].min()
-                    ob_data['bullish_ob_high'] = last_bearish_cluster['High'].max()
-                    logging.info(f"[{ticker}] Found Bullish BOS at {first_bos_candle.name.date()}. OB Zone: {ob_data['bullish_ob_low']:.2f}-{ob_data['bullish_ob_high']:.2f}")
-
-                    # --- 4. Check Bullish OB Validation ---
-                    history_after_bos = hist_df.loc[first_bos_candle.name:].iloc[1:]
-                    if not history_after_bos.empty:
-                        candles_that_touched = history_after_bos[history_after_bos['Low'] <= ob_data['bullish_ob_high']]
+                    ob_candle = bearish_candles.iloc[-1]
+                    ob_data['bullish_ob_low'] = float(ob_candle['Low'])
+                    ob_data['bullish_ob_high'] = float(ob_candle['High'])
+                    
+                    # --- Check Volume on BOS ---
+                    if first_bos_candle['Volume'] > (first_bos_candle['vol_sma'] * vol_multiplier):
+                        ob_data['bullish_ob_volume_ok'] = bool(True)
+                    
+                    # --- Check for FVG (Imbalance) ---
+                    try:
+                        # Find the FVG (Imbalance) created *after* the OB
+                        candle_after_ob_idx = hist_df.index.get_loc(ob_candle.name) + 1
+                        
+                        # Find candle after that (for 3-bar FVG: OB, C1, C2)
+                        if candle_after_ob_idx + 1 < len(hist_df):
+                            candle_after_bos = hist_df.iloc[candle_after_ob_idx + 1]
+                            
+                            # FVG exists if High[OB] < Low[C2]
+                            if fvg_check and ob_candle['High'] < candle_after_bos['Low']:
+                                 ob_data['bullish_ob_fvg'] = bool(True)
+                    except Exception:
+                        pass # Index errors, etc.
+                    
+                    # --- Check Mitigation (Validation) ---
+                    history_after_ob = hist_df.loc[ob_candle.name:].iloc[1:]
+                    if not history_after_ob.empty:
+                        candles_that_touched = history_after_ob[history_after_ob['Low'] <= ob_data['bullish_ob_high']]
                         
                         if not candles_that_touched.empty:
+                            # Price returned to the OB
                             invalidated = (candles_that_touched['Close'] < ob_data['bullish_ob_low']).any()
-                            
                             if not invalidated:
-                                first_touch_idx = candles_that_touched.index[0]
-                                reaction_candles = hist_df.loc[first_touch_idx:].iloc[1:validation_lookback+1]
-                                
-                                if not reaction_candles.empty:
-                                    bounced = reaction_candles['High'].max() > first_bos_candle.High
-                                    if bounced:
-                                        ob_data['bullish_ob_validated'] = bool(True)
-                                        logging.info(f"[{ticker}] Bullish OB was validated (mitigated and bounced).")
+                                ob_data['bullish_ob_validated'] = bool(True)
+                                logging.info(f"[{ticker}] Bullish OB {ob_data['bullish_ob_low']:.2f}-{ob_data['bullish_ob_high']:.2f} was mitigated (validated).")
                             else:
-                                 logging.info(f"[{ticker}] Bullish OB was invalidated (price closed below zone).")
+                                 logging.info(f"[{ticker}] Bullish OB was invalidated.")
+                        else:
+                            # This is a "fresh" unmitigated OB
+                            logging.info(f"[{ticker}] Found Fresh Bullish OB at {ob_candle.name.date()}. Zone: {ob_data['bullish_ob_low']:.2f}-{ob_data['bullish_ob_high']:.2f}")
 
-        # --- 5. Find Most Recent Bearish OB (BOS Down) ---
-        if not swing_lows.empty:
-            last_sl = swing_lows.iloc[-1]
-            ob_data['last_swing_low'] = last_sl.sl
-            
+                    break # We found the most recent one
+
+        # --- 4. Find Most Recent Bearish OB (BOS Down) ---
+        # Find the last time price broke *below* a swing low
+        
+        for i in range(len(swing_lows) - 1, 0, -1):
+            last_sl = swing_lows.iloc[i-1] # The SL we need to break
             hist_after_sl = hist_df.loc[last_sl.name:]
+            
+            # Find all candles that closed below that SL (BOS)
             bos_down_candles = hist_after_sl[hist_after_sl['Close'] < last_sl.sl]
             
             if not bos_down_candles.empty:
                 first_bos_candle = bos_down_candles.iloc[0]
+                
+                # --- Find the OB ---
+                # Look for the last up candle *before* the BOS candle
                 candles_before_bos = hist_df.loc[:first_bos_candle.name].iloc[:-1]
                 bullish_candles = candles_before_bos[candles_before_bos['Close'] > candles_before_bos['Open']]
                 
                 if not bullish_candles.empty:
-                    last_bullish_cluster = bullish_candles.iloc[-cluster_size:]
-                    ob_data['bearish_ob_low'] = last_bullish_cluster['Low'].min()
-                    ob_data['bearish_ob_high'] = last_bullish_cluster['High'].max()
-                    logging.info(f"[{ticker}] Found Bearish BOS at {first_bos_candle.name.date()}. OB Zone: {ob_data['bearish_ob_low']:.2f}-{ob_data['bearish_ob_high']:.2f}")
-
-                    # --- 6. Check Bearish OB Validation ---
-                    history_after_bos = hist_df.loc[first_bos_candle.name:].iloc[1:]
-                    if not history_after_bos.empty:
-                        candles_that_touched = history_after_bos[history_after_bos['High'] >= ob_data['bearish_ob_low']]
+                    ob_candle = bullish_candles.iloc[-1]
+                    ob_data['bearish_ob_low'] = float(ob_candle['Low'])
+                    ob_data['bearish_ob_high'] = float(ob_candle['High'])
+                    
+                    # --- Check Volume on BOS ---
+                    if first_bos_candle['Volume'] > (first_bos_candle['vol_sma'] * vol_multiplier):
+                        ob_data['bearish_ob_volume_ok'] = bool(True)
+                    
+                    # --- Check for FVG (Imbalance) ---
+                    try:
+                        candle_after_ob_idx = hist_df.index.get_loc(ob_candle.name) + 1
+                        
+                        if candle_after_ob_idx + 1 < len(hist_df):
+                            candle_after_bos = hist_df.iloc[candle_after_ob_idx + 1]
+                            
+                            # FVG exists if Low[OB] > High[C2]
+                            if fvg_check and ob_candle['Low'] > candle_after_bos['High']:
+                                 ob_data['bearish_ob_fvg'] = bool(True)
+                    except Exception:
+                        pass # Index errors
+                    
+                    # --- Check Mitigation (Validation) ---
+                    history_after_ob = hist_df.loc[ob_candle.name:].iloc[1:]
+                    if not history_after_ob.empty:
+                        candles_that_touched = history_after_ob[history_after_ob['High'] >= ob_data['bearish_ob_low']]
                         
                         if not candles_that_touched.empty:
+                            # Price returned to the OB
                             invalidated = (candles_that_touched['Close'] > ob_data['bearish_ob_high']).any()
-                            
                             if not invalidated:
-                                first_touch_idx = candles_that_touched.index[0]
-                                reaction_candles = hist_df.loc[first_touch_idx:].iloc[1:validation_lookback+1]
-                                
-                                if not reaction_candles.empty:
-                                    bounced = reaction_candles['Low'].min() < first_bos_candle.Low
-                                    if bounced:
-                                        ob_data['bearish_ob_validated'] = bool(True)
-                                        logging.info(f"[{ticker}] Bearish OB was validated (mitigated and bounced).")
+                                ob_data['bearish_ob_validated'] = bool(True)
+                                logging.info(f"[{ticker}] Bearish OB {ob_data['bearish_ob_low']:.2f}-{ob_data['bearish_ob_high']:.2f} was mitigated (validated).")
                             else:
-                                 logging.info(f"[{ticker}] Bearish OB was invalidated (price closed above zone).")
-        
-        # --- 7. Final Return ---
-        if swing_highs.empty and swing_lows.empty:
-             logging.warning(f"[{ticker}] No swing points found in the last {lookback} days.")
+                                logging.info(f"[{ticker}] Bearish OB was invalidated.")
+                        else:
+                            # This is a "fresh" unmitigated OB
+                             logging.info(f"[{ticker}] Found Fresh Bearish OB at {ob_candle.name.date()}. Zone: {ob_data['bearish_ob_low']:.2f}-{ob_data['bearish_ob_high']:.2f}")
 
+                    break # We found the most recent one
+        
         return ob_data
                 
     except Exception as e:
-        logging.warning(f"[{ticker}] Error in find_order_blocks: {e}", exc_info=True)
+        logging.warning(f"[{ticker}] Error in find_order_blocks (v2): {e}", exc_info=True)
         # Return default structure on error
         ob_data_default = {
             'bullish_ob_low': np.nan, 'bullish_ob_high': np.nan, 'bullish_ob_validated': bool(False),
+            'bullish_ob_fvg': bool(False), 'bullish_ob_volume_ok': bool(False),
             'bearish_ob_low': np.nan, 'bearish_ob_high': np.nan, 'bearish_ob_validated': bool(False),
+            'bearish_ob_fvg': bool(False), 'bearish_ob_volume_ok': bool(False),
             'last_swing_low': np.nan, 'last_swing_high': np.nan
         }
         return ob_data_default
@@ -654,27 +717,30 @@ def parse_ticker_data(data, ticker_symbol):
         else:
             parsed['pct_above_support'] = np.nan
         
+        # --- UPGRADED SMC FUNCTION ---
         ob_data = find_order_blocks(hist, ticker=ticker_symbol)
         parsed.update(ob_data) # keys are static and correctly typed
         
-        # --- NEW: Entry Signal Logic ---
+        # --- NEW: Entry Signal Logic (No changes needed, logic is sound) ---
         smc_config = CONFIG.get('TECHNICALS', {}).get('SMC_ORDER_BLOCKS', {})
         proximity_pct = smc_config.get('ENTRY_PROXIMITY_PERCENT', 2.0) / 100.0
         entry_signal = "No Trade"
         
         bullish_ob_low = parsed.get('bullish_ob_low', np.nan)
         bullish_ob_high = parsed.get('bullish_ob_high', np.nan)
-        bullish_ob_validated = parsed.get('bullish_ob_validated', False)
+        # Use 'validated' OR 'fresh' (un-validated) OBs for entry
+        is_bullish_ob_active = pd.notna(bullish_ob_low)
         
         bearish_ob_low = parsed.get('bearish_ob_low', np.nan)
         bearish_ob_high = parsed.get('bearish_ob_high', np.nan)
-        bearish_ob_validated = parsed.get('bearish_ob_validated', False)
+        # Use 'validated' OR 'fresh' (un-validated) OBs for entry
+        is_bearish_ob_active = pd.notna(bearish_ob_low)
 
-        if bullish_ob_validated and pd.notna(bullish_ob_high) and pd.notna(bullish_ob_low):
+        if is_bullish_ob_active:
             entry_zone_top = bullish_ob_high * (1 + proximity_pct)
             if last_price >= bullish_ob_low and last_price <= entry_zone_top:
                 entry_signal = "Buy near Bullish OB"
-        elif bearish_ob_validated and pd.notna(bearish_ob_low) and pd.notna(bearish_ob_high):
+        elif is_bearish_ob_active:
             entry_zone_bottom = bearish_ob_low * (1 - proximity_pct)
             if last_price <= bearish_ob_high and last_price >= entry_zone_bottom:
                 entry_signal = "Sell near Bearish OB"
@@ -821,7 +887,6 @@ def parse_ticker_data(data, ticker_symbol):
         if 'Stop Loss (ATR)' not in parsed:
             parsed['Stop Loss (ATR)'] = np.nan
         if 'Stop Loss (Cut Loss)' not in parsed:
-            # --- THIS IS THE FIXED TYPO ---
             parsed['Stop Loss (Cut Loss)'] = np.nan
             
         # --- ✅ START NEW CODE ---
@@ -852,7 +917,12 @@ def parse_ticker_data(data, ticker_symbol):
             'bullish_ob_validated': bool(False),
             'bearish_ob_validated': bool(False),
             'earnings_negative': bool(False),
-            'earnings_volatile': bool(False)
+            'earnings_volatile': bool(False),
+            # --- ADD THESE 4 LINES ---
+            'bullish_ob_fvg': bool(False),
+            'bullish_ob_volume_ok': bool(False),
+            'bearish_ob_fvg': bool(False),
+            'bearish_ob_volume_ok': bool(False)
         }
 
 
@@ -866,7 +936,20 @@ def process_ticker(ticker):
     """
     if CONFIG is None:
         logging.error(f"process_ticker ({ticker}): CONFIG is None.")
-        return {'ticker': str(ticker), 'success': bool(False), 'error': 'Config not loaded'}
+        # ✅ FIX: Return a flat dict with default bools
+        return {
+            'ticker': str(ticker), 
+            'success': bool(False), 
+            'error': 'Config not loaded',
+            'bullish_ob_validated': bool(False),
+            'bearish_ob_validated': bool(False),
+            'earnings_negative': bool(False),
+            'earnings_volatile': bool(False),
+            'bullish_ob_fvg': bool(False),
+            'bullish_ob_volume_ok': bool(False),
+            'bearish_ob_fvg': bool(False),
+            'bearish_ob_volume_ok': bool(False)
+        }
         
     # 1. Attempt yfinance
     ticker_obj = yf.Ticker(ticker)
@@ -906,7 +989,11 @@ def process_ticker(ticker):
                 'bullish_ob_validated': bool(False),
                 'bearish_ob_validated': bool(False),
                 'earnings_negative': bool(False),
-                'earnings_volatile': bool(False)
+                'earnings_volatile': bool(False),
+                'bullish_ob_fvg': bool(False),
+                'bullish_ob_volume_ok': bool(False),
+                'bearish_ob_fvg': bool(False),
+                'bearish_ob_volume_ok': bool(False)
             }
             
     # 3. Parse and Calculate
@@ -930,7 +1017,11 @@ def process_ticker(ticker):
             'bullish_ob_validated': bool(False),
             'bearish_ob_validated': bool(False),
             'earnings_negative': bool(False),
-            'earnings_volatile': bool(False)
+            'earnings_volatile': bool(False),
+            'bullish_ob_fvg': bool(False),
+            'bullish_ob_volume_ok': bool(False),
+            'bearish_ob_fvg': bool(False),
+            'bearish_ob_volume_ok': bool(False)
         }
 
 
