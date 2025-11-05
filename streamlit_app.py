@@ -573,17 +573,15 @@ def create_radar_chart(ticker_data, factor_cols):
     )
     return fig
 
+# --- ✅ MODIFIED FUNCTION ---
 def display_buy_signal_checklist(ticker_data):
     """
-    Displays a 4-step checklist on the Ticker Deep Dive tab,
+    Displays a 5-step checklist on the Ticker Deep Dive tab,
     showing which buy criteria are met.
-    
-    --- MODIFIED to include Entry Signal, FVG, and Volume ---
     """
     
     SCORE_THRESHOLD = 1.0
     FACTOR_Z_THRESHOLD = 0.5 
-    RSI_OVERBOUGHT = 70.0
     RR_RATIO_THRESHOLD = 1.5
 
     # Step 1: Quant Score
@@ -603,16 +601,42 @@ def display_buy_signal_checklist(ticker_data):
         step2_met = True
     step2_details = f"Value: {z_value:.2f}, Quality: {z_quality:.2f}"
 
-    # --- ✅ NEW: Step 3: SMC Entry Signal ---
+    # --- NEW: Step 3: Favorable Technicals ---
     step3_met = False
-    step3_text = "**3. SMC Entry Signal**"
+    step3_text = "**3. Favorable Technicals**"
+    
+    RSI_OVERBOUGHT = 70.0
+    TREND_GOOD = ["Confirmed Uptrend", "Uptrend (Correction)"]
+    MACD_GOOD = ["Bullish Crossover", "Bullish"]
+
+    rsi_val = ticker_data.get('RSI', 99)
+    trend_val = ticker_data.get('Trend (50/200 Day MA)', 'N/A')
+    macd_val = ticker_data.get('MACD_Signal', 'N/A')
+
+    is_rsi_ok = pd.notna(rsi_val) and rsi_val < RSI_OVERBOUGHT
+    is_trend_ok = trend_val in TREND_GOOD
+    is_macd_ok = macd_val in MACD_GOOD
+
+    if is_rsi_ok and is_trend_ok and is_macd_ok:
+        step3_met = True
+        
+    rsi_icon = "✅" if is_rsi_ok else "❌"
+    trend_icon = "✅" if is_trend_ok else "❌"
+    macd_icon = "✅" if is_macd_ok else "❌"
+    
+    # Use <br> for line breaks, requires unsafe_allow_html=True later
+    step3_details = f"{trend_icon} Trend: {trend_val}<br>{macd_icon} MACD: {macd_val}<br>{rsi_icon} RSI: {rsi_val:.1f}"
+
+    # --- Step 4: SMC Entry Signal (Was Step 3) ---
+    step4_met = False
+    step4_text = "**4. SMC Entry Signal**"
     entry_signal = ticker_data.get('entry_signal', 'No Trade')
     has_fvg = ticker_data.get('bullish_ob_fvg', False)
     has_vol = ticker_data.get('bullish_ob_volume_ok', False)
     
     details = []
     if entry_signal == 'Buy near Bullish OB':
-        step3_met = True
+        step4_met = True
         details.append(f"Signal: {entry_signal}")
     elif entry_signal == 'Sell near Bearish OB':
         details.append(f"Signal: {entry_signal}")
@@ -622,31 +646,32 @@ def display_buy_signal_checklist(ticker_data):
     details.append(f"FVG: {'✅' if has_fvg else '❌'}")
     details.append(f"Vol: {'✅' if has_vol else '❌'}")
     
-    step3_details = ", ".join(details)
+    step4_details = ", ".join(details)
         
-    # Step 4: Risk/Reward
-    step4_met = False
-    step4_text = f"**4. R/R Ratio > {RR_RATIO_THRESHOLD}**"
+    # --- Step 5: Risk/Reward (Was Step 4) ---
+    step5_met = False
+    step5_text = f"**5. R/R Ratio > {RR_RATIO_THRESHOLD}**"
     rr_ratio = ticker_data.get('Risk/Reward Ratio', 0)
     if pd.notna(rr_ratio) and rr_ratio > RR_RATIO_THRESHOLD:
-        step4_met = True
-    step4_details = f"Ratio is {rr_ratio:.2f}"
+        step5_met = True
+    step5_details = f"Ratio is {rr_ratio:.2f}"
     
     st.subheader("Buy Signal Checklist")
-    cols = st.columns(4)
+    cols = st.columns(5) # <-- MODIFIED to 5 columns
     
     criteria = [
         (step1_met, step1_text, step1_details),
         (step2_met, step2_text, step2_details),
-        (step3_met, step3_text, step3_details), # <-- MODIFIED
-        (step4_met, step4_text, step4_details)
+        (step3_met, step3_text, step3_details), # <-- NEW STEP
+        (step4_met, step4_text, step4_details), # <-- Was Step 3
+        (step5_met, step5_text, step5_details)  # <-- Was Step 4
     ]
     
     for i, (met, text, details) in enumerate(criteria):
         with cols[i]:
             icon = "✅" if met else "❌"
             st.markdown(f"**{icon} {text}**")
-            st.markdown(details, unsafe_allow_html=True)
+            st.markdown(details, unsafe_allow_html=True) # <-- MODIFIED to allow HTML
 
 
 # --- ⭐️ 5. Main Streamlit Application ⭐️ ---
@@ -990,9 +1015,9 @@ def main():
         st.header("🏆 Top Stocks by Final Quant Score")
         st.info("Click a ticker to select it and automatically move to the 'Ticker Deep Dive' tab.")
         
-        with st.expander("How to Find a Good Buy Signal (4-Step Guide)", expanded=False):
+        with st.expander("How to Find a Good Buy Signal (5-Step Guide)", expanded=False):
             st.markdown("""
-                This 4-step method helps you use the app to find suitable buying opportunities.
+                This 5-step method helps you use the app to find suitable buying opportunities.
                 
                 ### 1. Check the Final Quant Score (The "What")
                 This is your primary signal. Look for stocks with a **high positive score** (e.g., > 1.0) 
@@ -1002,20 +1027,20 @@ def main():
                 Click a stock and go to the **"🔬 Ticker Deep Dive"** tab. Look at the 
                 **"Factor Profile"** radar chart. This tells you *why* the score is high. 
                 Is it high on `Value` (it's cheap) and `Quality` (it's a good company)? 
-                This helps you buy stocks that match your strategy.
                 
-                ### 3. Check the SMC Signal & Technicals (The "When")
-                On the **"Deep Dive"** tab, look at the **"Buy Signal Checklist"** and **"Key Price Zones"**.
+                ### 3. Check the Technicals (The "Momentum")
+                On the **"Deep Dive"** tab, look at the **"Buy Signal Checklist"**.
+                * **Technicals:** Are the `Trend`, `MACD`, and `RSI` all favorable (✅)?
+                
+                ### 4. Check the SMC Signal (The "When")
+                This is your high-precision entry signal.
                 * **Entry Signal:** Does it show **"Buy near Bullish OB"**?
                 * **FVG / Vol:** Does the checklist show a `✅` for **FVG** (Fair Value Gap) and **Vol** (BOS Volume)? This confirms a high-quality signal.
-                * **Trend (50/200 Day MA):** Is the trend "Confirmed Uptrend"?
-                
-                ### 4. Check the Risk & Sizing (The "How")
+
+                ### 5. Check the Risk & Sizing (The "How")
                 In the **"Risk & Position Sizing"** section, check the:
                 * **Risk/Reward Ratio:** Is it favorable (e.g., > 1.5)?
                 * **Final Stop Loss:** Is this exit price (based on ATR or Cut-Loss) acceptable?
-                * **Position Size (USD):** This calculates how much to invest for 
-                    your pre-defined risk amount (e.g., $50).
             """)
         
         rank_col1, rank_col2 = st.columns([1, 2])
